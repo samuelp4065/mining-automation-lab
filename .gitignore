@@ -1,23 +1,25 @@
-# Large binary images (23 GB SD card image — not suitable for git)
-jetson-orin-nano-devkit-super-SD-image_JP6.2.1/
-
-# Vendored third-party clones (keep their own upstream history)
-LSS_Library_Python/
-aruco_recognition/src/realsense-ros/
-aruco_recognition/src/ddynamic_reconfigure/
-
-# ROS build output
+# Colcon build output
 build/
-devel/
 install/
-logs/
+log/
 .catkin_workspace
 *.bag
+
+# Third-party clones — reconstruct with: vcs import src < upstream.repos
+src/librealsense/
+src/realsense-ros/
+src/rtabmap/
+src/rtabmap_ros/
+src/LSS_Library_Python/
+
+# Large binary images (23 GB SD card image — not suitable for git)
+jetson-orin-nano-devkit-super-SD-image_JP6.2.1/
 
 # Python
 __pycache__/
 *.py[cod]
 *.egg-info/
+.pytest_cache/
 .venv/
 venv/
 
@@ -35,3 +37,6 @@ modules.order
 .idea/
 .DS_Store
 *.swp
+
+#Agents
+CLAUDE.md
