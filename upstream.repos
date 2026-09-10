@@ -1,0 +1,23 @@
+# Third-party sources for the perception overlay workspace (~/ros2_ws).
+# These are NOT built in this repo — they live in the overlay so that a
+# rebuild here never triggers a multi-hour librealsense/rtabmap compile.
+#
+#   mkdir -p ~/ros2_ws/src && vcs import ~/ros2_ws/src < upstream.repos
+#   cd ~/ros2_ws && colcon build --symlink-install
+repositories:
+  librealsense:
+    type: git
+    url: https://github.com/IntelRealSense/librealsense.git
+    version: master
+  realsense-ros:
+    type: git
+    url: https://github.com/IntelRealSense/realsense-ros.git
+    version: ros2-master
+  rtabmap:
+    type: git
+    url: https://github.com/introlab/rtabmap.git
+    version: master
+  rtabmap_ros:
+    type: git
+    url: https://github.com/introlab/rtabmap_ros.git
+    version: humble-devel
