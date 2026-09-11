@@ -28,7 +28,7 @@ from . import lss_const as lssc
 from .drive_config import (
     DEFAULT_MAX_RPM, DEFAULT_PORT, DEFAULT_RPM_PER_MPS,
     DEFAULT_TRACK_SEPARATION, LEFT_ID, LEFT_SIGN, RIGHT_ID, RIGHT_SIGN,
-    twist_to_track_speeds,
+    declare_float, twist_to_track_speeds,
 )
 
 
@@ -37,16 +37,12 @@ class MotorNode(Node):
         super().__init__("motor_node")
 
         self.declare_parameter("port", DEFAULT_PORT)
-        self.declare_parameter("track_separation", DEFAULT_TRACK_SEPARATION)
-        self.declare_parameter("rpm_per_mps", DEFAULT_RPM_PER_MPS)
-        self.declare_parameter("max_rpm", DEFAULT_MAX_RPM)
-        self.declare_parameter("cmd_timeout", 0.5)
-
         port = self.get_parameter("port").value
-        self.separation = self.get_parameter("track_separation").value
-        self.rpm_per_mps = self.get_parameter("rpm_per_mps").value
-        self.max_rpm = self.get_parameter("max_rpm").value
-        self.cmd_timeout = self.get_parameter("cmd_timeout").value
+
+        self.separation = declare_float(self, "track_separation", DEFAULT_TRACK_SEPARATION)
+        self.rpm_per_mps = declare_float(self, "rpm_per_mps", DEFAULT_RPM_PER_MPS)
+        self.max_rpm = declare_float(self, "max_rpm", DEFAULT_MAX_RPM)
+        self.cmd_timeout = declare_float(self, "cmd_timeout", 0.5)
 
         lss.initBus(port, lssc.LSS_DefaultBaud)
         self.left = lss.LSS(LEFT_ID)

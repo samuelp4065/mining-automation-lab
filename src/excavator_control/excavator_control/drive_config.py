@@ -40,6 +40,22 @@ DEFAULT_RPM_PER_MPS = 100.0
 DEFAULT_MAX_RPM = 60.0
 
 
+def declare_float(node, name, default):
+    """Declare a float parameter that also accepts an integer on the CLI.
+
+    ROS 2 infers a parameter's type from its declared default, so a DOUBLE
+    parameter rejects ``-p max_rpm:=20`` and demands ``:=20.0``. Every tunable
+    in this package is a physical quantity where 20 and 20.0 mean the same
+    thing, and the exception names the mismatch without naming the fix -- so
+    accept either and coerce.
+    """
+    from rcl_interfaces.msg import ParameterDescriptor
+
+    node.declare_parameter(name, default,
+                           ParameterDescriptor(dynamic_typing=True))
+    return float(node.get_parameter(name).value)
+
+
 def twist_to_track_speeds(linear_x, angular_z, track_separation):
     """Skid-steer mixing: body twist -> (left, right) track speed in m/s.
 

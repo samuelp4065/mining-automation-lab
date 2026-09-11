@@ -34,7 +34,7 @@ from . import lss
 from . import lss_const as lssc
 from .drive_config import (
     DEFAULT_PORT, DEFAULT_TRACK_SEPARATION, LEFT_ID, LEFT_SIGN, RIGHT_ID,
-    RIGHT_SIGN,
+    RIGHT_SIGN, declare_float,
 )
 
 
@@ -51,17 +51,14 @@ class TrackOdometry(Node):
 
         self.declare_parameter("port", DEFAULT_PORT)
         self.declare_parameter("publish_tf", True)
-        self.declare_parameter("publish_rate", 20.0)
-        # MEASURE both of these on the machine; they set the scale of every
-        # distance nav2 believes it has travelled.
-        self.declare_parameter("track_separation", DEFAULT_TRACK_SEPARATION)
-        self.declare_parameter("counts_per_metre", 1000.0)  # LSS position units per metre
-
         port = self.get_parameter("port").value
         self.publish_tf = self.get_parameter("publish_tf").value
-        self.separation = self.get_parameter("track_separation").value
-        self.counts_per_m = self.get_parameter("counts_per_metre").value
-        rate = self.get_parameter("publish_rate").value
+
+        rate = declare_float(self, "publish_rate", 20.0)
+        # MEASURE both of these on the machine; they set the scale of every
+        # distance nav2 believes it has travelled.
+        self.separation = declare_float(self, "track_separation", DEFAULT_TRACK_SEPARATION)
+        self.counts_per_m = declare_float(self, "counts_per_metre", 1000.0)
 
         lss.initBus(port, lssc.LSS_DefaultBaud)
         self.left = lss.LSS(LEFT_ID)
