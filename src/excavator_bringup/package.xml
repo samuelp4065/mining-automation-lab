@@ -10,9 +10,11 @@
   <buildtool_depend>ament_cmake</buildtool_depend>
 
   <exec_depend>realsense2_camera</exec_depend>
-  <exec_depend>rtabmap_sync</exec_depend>
-  <exec_depend>rtabmap_odom</exec_depend>
-  <exec_depend>rtabmap_slam</exec_depend>
+  <exec_depend>slam_toolbox</exec_depend>
+  <exec_depend>nav2_bringup</exec_depend>
+  <exec_depend>nav2_map_server</exec_depend>
+  <exec_depend>depthimage_to_laserscan</exec_depend>
+  <exec_depend>excavator_description</exec_depend>
   <exec_depend>imu_filter_madgwick</exec_depend>
   <exec_depend>excavator_control</exec_depend>
   <exec_depend>excavator_perception</exec_depend>

@@ -20,6 +20,8 @@ setup(
     entry_points={
         'console_scripts': [
             'motor_node = excavator_control.motor_node:main',
+            'track_odometry = excavator_control.track_odometry:main',
+            'joint_state_bridge = excavator_control.joint_state_bridge:main',
         ],
     },
 )

@@ -1,0 +1,166 @@
+<?xml version="1.0"?>
+<!--
+  Excavator TF tree.
+
+  EVERY dimension marked MEASURE is a placeholder. Nav2's height-banded
+  obstacle layer classifies a limestone pile as material vs. an obstacle using
+  heights measured from base_footprint, so a wrong camera transform silently
+  turns the ground in front of the machine into an untraversable wall. Measure
+  these on the real machine before trusting any costmap.
+
+  Frame layout:
+    base_footprint        ground plane under the chassis centre (nav2's ground ref)
+      base_link           chassis centre
+        left/right_track
+        cab_link          rotates with the swingdrive (LSS ID 2)
+          boom -> stick -> bucket
+          camera_link     RealSense D435i  (see CAMERA MOUNT note)
+
+  CAMERA MOUNT: this file mounts the camera on cab_link, so it swings with the
+  cab. That is only correct if the swingdrive angle is published as a joint
+  state; otherwise TF believes the camera is fixed while the real one
+  rotates, and AMCL will fight a world that appears to spin on its own. If the
+  camera is actually bolted to the chassis, reparent it to base_link instead.
+-->
+<robot name="excavator" xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+  <!-- ==== MEASURE: chassis ==== -->
+  <xacro:property name="chassis_length" value="0.60"/>   <!-- MEASURE m -->
+  <xacro:property name="chassis_width"  value="0.40"/>   <!-- MEASURE m -->
+  <xacro:property name="chassis_height" value="0.15"/>   <!-- MEASURE m -->
+  <xacro:property name="ground_clearance" value="0.05"/> <!-- MEASURE m -->
+
+  <!-- ==== MEASURE: tracks ==== -->
+  <xacro:property name="track_length" value="0.60"/>     <!-- MEASURE m -->
+  <xacro:property name="track_width"  value="0.08"/>     <!-- MEASURE m -->
+  <xacro:property name="track_height" value="0.10"/>     <!-- MEASURE m -->
+  <xacro:property name="track_separation" value="0.36"/> <!-- MEASURE m, centre-to-centre. Used by track odometry. -->
+
+  <!-- ==== MEASURE: cab / swingdrive ==== -->
+  <xacro:property name="cab_height" value="0.12"/>       <!-- MEASURE m -->
+  <xacro:property name="cab_z_offset" value="0.10"/>     <!-- MEASURE m, chassis top to cab base -->
+
+  <!-- ==== Arm: these are known (excavator_kinematics, cm -> m) ==== -->
+  <xacro:property name="boom_length"   value="0.46"/>
+  <xacro:property name="stick_length"  value="0.20"/>
+  <xacro:property name="bucket_length" value="0.12"/>
+
+  <!-- ==== MEASURE: camera mount, relative to cab_link ==== -->
+  <xacro:property name="cam_x"     value="0.20"/>        <!-- MEASURE m, forward -->
+  <xacro:property name="cam_y"     value="0.00"/>        <!-- MEASURE m, lateral -->
+  <xacro:property name="cam_z"     value="0.25"/>        <!-- MEASURE m, up -->
+  <xacro:property name="cam_pitch" value="0.26"/>        <!-- MEASURE rad, + = tilted DOWN. ~15 deg placeholder. -->
+
+  <material name="steel"><color rgba="0.55 0.57 0.60 1.0"/></material>
+  <material name="track_rubber"><color rgba="0.15 0.15 0.15 1.0"/></material>
+  <material name="yellow"><color rgba="0.90 0.72 0.10 1.0"/></material>
+
+  <xacro:macro name="box_link" params="name x y z material">
+    <link name="${name}">
+      <visual>
+        <geometry><box size="${x} ${y} ${z}"/></geometry>
+        <material name="${material}"/>
+      </visual>
+      <collision>
+        <geometry><box size="${x} ${y} ${z}"/></geometry>
+      </collision>
+    </link>
+  </xacro:macro>
+
+  <!-- ============ base ============ -->
+  <link name="base_footprint"/>
+
+  <xacro:box_link name="base_link" x="${chassis_length}" y="${chassis_width}"
+                  z="${chassis_height}" material="steel"/>
+
+  <joint name="base_footprint_to_base_link" type="fixed">
+    <parent link="base_footprint"/>
+    <child  link="base_link"/>
+    <origin xyz="0 0 ${ground_clearance + chassis_height/2}" rpy="0 0 0"/>
+  </joint>
+
+  <!-- ============ tracks ============ -->
+  <xacro:box_link name="left_track_link" x="${track_length}" y="${track_width}"
+                  z="${track_height}" material="track_rubber"/>
+  <joint name="base_to_left_track" type="fixed">
+    <parent link="base_link"/>
+    <child  link="left_track_link"/>
+    <origin xyz="0 ${track_separation/2} ${-chassis_height/2}" rpy="0 0 0"/>
+  </joint>
+
+  <xacro:box_link name="right_track_link" x="${track_length}" y="${track_width}"
+                  z="${track_height}" material="track_rubber"/>
+  <joint name="base_to_right_track" type="fixed">
+    <parent link="base_link"/>
+    <child  link="right_track_link"/>
+    <origin xyz="0 ${-track_separation/2} ${-chassis_height/2}" rpy="0 0 0"/>
+  </joint>
+
+  <!-- ============ cab (swingdrive, LSS ID 2) ============ -->
+  <xacro:box_link name="cab_link" x="${chassis_length*0.7}" y="${chassis_width*0.8}"
+                  z="${cab_height}" material="yellow"/>
+  <joint name="swing_joint" type="revolute">
+    <parent link="base_link"/>
+    <child  link="cab_link"/>
+    <origin xyz="0 0 ${chassis_height/2 + cab_z_offset}" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-3.14159" upper="3.14159" effort="50" velocity="1.0"/>
+  </joint>
+
+  <!-- ============ arm: boom -> stick -> bucket ============
+       Joint angles follow excavator_kinematics: theta1 absolute from +x,
+       theta2/theta3 relative to the previous link. Limits come from
+       JOINT_LIMITS_DEG in calibration.py (converted to radians).            -->
+  <xacro:box_link name="boom_link" x="${boom_length}" y="0.06" z="0.06" material="yellow"/>
+  <joint name="boom_joint" type="revolute">
+    <parent link="cab_link"/>
+    <child  link="boom_link"/>
+    <origin xyz="0 0 ${cab_height/2}" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="0.349" upper="1.047" effort="100" velocity="0.5"/>  <!-- 20..60 deg -->
+  </joint>
+
+  <xacro:box_link name="stick_link" x="${stick_length}" y="0.05" z="0.05" material="yellow"/>
+  <joint name="stick_joint" type="revolute">
+    <parent link="boom_link"/>
+    <child  link="stick_link"/>
+    <origin xyz="${boom_length} 0 0" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-2.094" upper="-0.663" effort="100" velocity="0.5"/> <!-- -120..-38 deg -->
+  </joint>
+
+  <xacro:box_link name="bucket_link" x="${bucket_length}" y="0.10" z="0.08" material="steel"/>
+  <joint name="bucket_joint" type="revolute">
+    <parent link="stick_link"/>
+    <child  link="bucket_link"/>
+    <origin xyz="${stick_length} 0 0" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-3.695" upper="-0.785" effort="100" velocity="0.5"/> <!-- -211.7..-45 deg -->
+  </joint>
+
+  <!-- Arm base frame: origin of the IK solve, for the depth-slice dig target. -->
+  <link name="arm_base_frame"/>
+  <joint name="cab_to_arm_base" type="fixed">
+    <parent link="cab_link"/>
+    <child  link="arm_base_frame"/>
+    <origin xyz="0 0 ${cab_height/2}" rpy="0 0 0"/>
+  </joint>
+
+  <!-- ============ camera ============ -->
+  <link name="camera_link"/>
+  <joint name="cab_to_camera" type="fixed">
+    <parent link="cab_link"/>
+    <child  link="camera_link"/>
+    <origin xyz="${cam_x} ${cam_y} ${cam_z}" rpy="0 ${cam_pitch} 0"/>
+  </joint>
+
+  <!-- REP-103 optical frame: z forward, x right, y down. realsense2_camera
+       publishes its own internal frames below this one. -->
+  <link name="camera_link_optical"/>
+  <joint name="camera_to_optical" type="fixed">
+    <parent link="camera_link"/>
+    <child  link="camera_link_optical"/>
+    <origin xyz="0 0 0" rpy="${-pi/2} 0 ${-pi/2}"/>
+  </joint>
+
+</robot>
