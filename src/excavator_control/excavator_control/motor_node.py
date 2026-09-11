@@ -28,7 +28,7 @@ from . import lss_const as lssc
 from .drive_config import (
     DEFAULT_MAX_RPM, DEFAULT_PORT, DEFAULT_RPM_PER_MPS,
     DEFAULT_TRACK_SEPARATION, LEFT_ID, LEFT_SIGN, RIGHT_ID, RIGHT_SIGN,
-    declare_float, twist_to_track_speeds,
+    declare_float, scale_to_max_rpm, twist_to_track_speeds,
 )
 
 
@@ -61,9 +61,6 @@ class MotorNode(Node):
             f"watchdog {self.cmd_timeout} s"
         )
 
-    def _clamp(self, rpm):
-        return max(-self.max_rpm, min(self.max_rpm, rpm))
-
     def _on_cmd_vel(self, msg):
         self.last_cmd_time = self.get_clock().now()
 
@@ -71,16 +68,11 @@ class MotorNode(Node):
             msg.linear.x, msg.angular.z, self.separation
         )
 
-        rpm_left = self._clamp(v_left * self.rpm_per_mps)
-        rpm_right = self._clamp(v_right * self.rpm_per_mps)
-
-        # Scale both together if either saturates, so a clamped turn keeps its
-        # shape instead of straightening out as one track hits the ceiling.
-        peak = max(abs(rpm_left), abs(rpm_right))
-        if peak > self.max_rpm:
-            scale = self.max_rpm / peak
-            rpm_left *= scale
-            rpm_right *= scale
+        # Convert first, limit second. Clamping each track on its own would
+        # flatten the commanded turn as speed rises -- see scale_to_max_rpm.
+        rpm_left, rpm_right = scale_to_max_rpm(
+            v_left * self.rpm_per_mps, v_right * self.rpm_per_mps, self.max_rpm
+        )
 
         self._drive(rpm_left, rpm_right)
         self.stopped = False

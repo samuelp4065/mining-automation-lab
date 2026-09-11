@@ -8,7 +8,7 @@ went somewhere else, and nav2 trusts the report.
 import pytest
 
 from excavator_control.drive_config import (
-    LEFT_SIGN, RIGHT_SIGN, twist_to_track_speeds,
+    LEFT_SIGN, RIGHT_SIGN, scale_to_max_rpm, twist_to_track_speeds,
 )
 
 SEP = 0.36
@@ -59,25 +59,52 @@ def test_wider_track_separation_needs_more_differential():
 
 
 def test_saturation_scaling_preserves_turn_shape():
-    """Clamping must scale both tracks together, not straighten the turn.
+    """Limiting must scale both tracks together, not straighten the turn.
 
-    Mirrors the scaling in MotorNode._on_cmd_vel: clipping each track
-    independently would make a saturated turn drive straighter than commanded,
-    which is exactly the wrong failure at speed.
+    Calls the real scale_to_max_rpm rather than reimplementing it. An earlier
+    version of this test duplicated the maths, so it kept passing while
+    motor_node clamped each track independently and silently flattened every
+    arc at speed.
     """
     max_rpm = 60.0
     v_left, v_right = twist_to_track_speeds(1.0, 1.0, SEP)
     rpm_left, rpm_right = v_left * 100.0, v_right * 100.0
     ratio_before = rpm_left / rpm_right
+    assert max(abs(rpm_left), abs(rpm_right)) > max_rpm, "test needs saturation"
 
-    peak = max(abs(rpm_left), abs(rpm_right))
-    assert peak > max_rpm, "test needs a saturating command"
-    scale = max_rpm / peak
-    rpm_left *= scale
-    rpm_right *= scale
+    scaled_left, scaled_right = scale_to_max_rpm(rpm_left, rpm_right, max_rpm)
 
-    assert rpm_left / rpm_right == pytest.approx(ratio_before)
-    assert max(abs(rpm_left), abs(rpm_right)) == pytest.approx(max_rpm)
+    assert scaled_left / scaled_right == pytest.approx(ratio_before)
+    assert max(abs(scaled_left), abs(scaled_right)) == pytest.approx(max_rpm)
+
+
+@pytest.mark.parametrize("speed", [0.1, 0.2, 0.3, 0.5, 1.0, 3.0])
+def test_arc_ratio_survives_any_speed(speed):
+    """The inner/outer ratio must not drift as commanded speed rises.
+
+    This is the regression that prompted scale_to_max_rpm: with a per-track
+    clamp the ratio crept from 0.2 toward 1.0 as speed increased, until the
+    machine drove straight while still being told to arc.
+    """
+    from excavator_control.teleop_keyboard import arc_to_twist
+
+    max_rpm, rpm_per_mps, ratio = 20.0, 100.0, 0.2
+    v, w = arc_to_twist("forward", "left", ratio, speed, SEP)
+    v_left, v_right = twist_to_track_speeds(v, w, SEP)
+    rpm_left, rpm_right = scale_to_max_rpm(
+        v_left * rpm_per_mps, v_right * rpm_per_mps, max_rpm
+    )
+
+    assert rpm_left / rpm_right == pytest.approx(ratio, abs=1e-9)
+    assert max(abs(rpm_left), abs(rpm_right)) <= max_rpm + 1e-9
+
+
+def test_scaling_is_a_no_op_below_the_ceiling():
+    assert scale_to_max_rpm(10.0, 20.0, 60.0) == (10.0, 20.0)
+
+
+def test_scaling_handles_a_stopped_machine():
+    assert scale_to_max_rpm(0.0, 0.0, 60.0) == (0.0, 0.0)
 
 
 # --- teleop key bindings ----------------------------------------------------
