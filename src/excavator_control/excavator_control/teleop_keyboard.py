@@ -51,7 +51,7 @@ import rclpy
 from geometry_msgs.msg import Twist
 from rclpy.node import Node
 
-from .drive_config import DEFAULT_TRACK_SEPARATION
+from .drive_config import DEFAULT_TRACK_SEPARATION, declare_float
 
 #: Body twists, as (forward, turn) multiples of the speed/turn settings.
 MOVE_BINDINGS = {
@@ -127,15 +127,11 @@ class TeleopKeyboard(Node):
     def __init__(self):
         super().__init__("teleop_keyboard")
 
-        self.declare_parameter("speed", 0.3)
-        self.declare_parameter("turn", 0.8)
-        self.declare_parameter("repeat_rate", 10.0)
-        self.declare_parameter("track_separation", DEFAULT_TRACK_SEPARATION)
-
-        self.speed = self.get_parameter("speed").value
-        self.turn = self.get_parameter("turn").value
-        self.separation = self.get_parameter("track_separation").value
-        repeat_rate = self.get_parameter("repeat_rate").value
+        self.speed = declare_float(self, "speed", 0.3)
+        self.turn = declare_float(self, "turn", 0.8)
+        repeat_rate = declare_float(self, "repeat_rate", 10.0)
+        self.separation = declare_float(self, "track_separation",
+                                        DEFAULT_TRACK_SEPARATION)
 
         # Either ("move", forward, turn) or ("arc", travel, inner, ratio).
         # Stored as the binding rather than a finished twist, so changing

@@ -25,6 +25,8 @@ import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import JointState
 
+from .drive_config import declare_float
+
 JOINT_NAMES = ["swing_joint", "boom_joint", "stick_joint", "bucket_joint"]
 
 # Mid-travel defaults, inside the limits in excavator_kinematics.calibration.
@@ -44,13 +46,11 @@ class JointStateBridge(Node):
 
         self.declare_parameter("mode", "hardware")       # hardware | simulate
         self.declare_parameter("port", "/dev/ttyUSB0")
-        self.declare_parameter("publish_rate", 20.0)
         # LSS reports the swingdrive in tenths of a degree.
-        self.declare_parameter("swing_counts_per_degree", 10.0)
 
         self.mode = self.get_parameter("mode").value
-        self.counts_per_deg = self.get_parameter("swing_counts_per_degree").value
-        rate = self.get_parameter("publish_rate").value
+        self.counts_per_deg = declare_float(self, "swing_counts_per_degree", 10.0)
+        rate = declare_float(self, "publish_rate", 20.0)
 
         self.angles = dict(DEFAULT_ANGLES)
         self.swingdrive = None
