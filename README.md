@@ -68,8 +68,32 @@ ros2 launch excavator_bringup mapping.launch.py           # ONE TIME: build the 
 ros2 run nav2_map_server map_saver_cli -f ~/maps/pit_map
 
 ros2 launch excavator_bringup navigation.launch.py map:=~/maps/pit_map.yaml
-ros2 run excavator_control motor_node                     # track drive from /cmd_vel
 ```
+
+Manual driving:
+
+```bash
+ros2 run excavator_control motor_node        # terminal 1: /cmd_vel -> tracks
+ros2 run excavator_control teleop_keyboard   # terminal 2: keyboard
+```
+
+| Key | Action |
+| --- | ------ |
+| `i` / `,` | forward / backward |
+| `u` / `o` | forward, gentle arc left / right |
+| `m` / `.` | reverse, gentle arc |
+| `j` / `l` | spin in place, full rate |
+| `k`, space | stop |
+| `q`/`z`, `w`/`x`, `e`/`c` | scale both / speed only / turn only |
+
+The arc keys scale their turn by `arc_gain` (default `0.4`) so they curve
+rather than swinging the machine — on a skid-steer, a full-rate turn combined
+with full forward makes the inside track slip hard. Tune with
+`--ros-args -p arc_gain:=0.25`.
+
+`motor_node` stops the tracks if `/cmd_vel` goes quiet for `cmd_timeout`
+(0.5 s) and on shutdown. Start with `-p max_rpm:=20` the first time: `rpm_per_mps`
+is still uncalibrated, so commanded m/s are only proportional, not absolute.
 
 Tests need neither ROS nor hardware:
 
