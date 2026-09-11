@@ -78,3 +78,55 @@ def test_saturation_scaling_preserves_turn_shape():
 
     assert rpm_left / rpm_right == pytest.approx(ratio_before)
     assert max(abs(rpm_left), abs(rpm_right)) == pytest.approx(max_rpm)
+
+
+# --- teleop key bindings ----------------------------------------------------
+
+from excavator_control.teleop_keyboard import (  # noqa: E402
+    ARC_BINDINGS, MOVE_BINDINGS, SPEED_BINDINGS,
+)
+
+ARC_GAIN = 0.4
+
+
+def test_no_key_is_bound_twice():
+    """A key in two tables would make behaviour depend on check order."""
+    tables = [set(MOVE_BINDINGS), set(ARC_BINDINGS), set(SPEED_BINDINGS)]
+    for i, a in enumerate(tables):
+        for b in tables[i + 1:]:
+            assert not (a & b), f"key bound in two tables: {a & b}"
+
+
+def test_arc_keys_turn_gentler_than_spin_keys():
+    """u and o must curve, not swing. This is the whole point of the table."""
+    _, arc_turn = ARC_BINDINGS["u"]
+    _, spin_turn = MOVE_BINDINGS["j"]
+    assert abs(arc_turn * ARC_GAIN) < abs(spin_turn)
+
+
+def test_arc_keys_still_drive_forward_at_full_speed():
+    """Only the turn component is scaled; forward speed is untouched."""
+    assert ARC_BINDINGS["u"][0] == MOVE_BINDINGS["i"][0]
+    assert ARC_BINDINGS["o"][0] == MOVE_BINDINGS["i"][0]
+
+
+def test_u_and_o_arc_in_opposite_directions():
+    assert ARC_BINDINGS["u"][1] == -ARC_BINDINGS["o"][1]
+
+
+def test_reverse_arcs_use_the_same_gain_as_forward_arcs():
+    """Forward and reverse diagonals must behave symmetrically."""
+    assert abs(ARC_BINDINGS["m"][1]) == abs(ARC_BINDINGS["u"][1])
+    assert abs(ARC_BINDINGS["."][1]) == abs(ARC_BINDINGS["o"][1])
+    assert ARC_BINDINGS["m"][0] < 0 and ARC_BINDINGS["."][0] < 0
+
+
+def test_spin_keys_are_unaffected_by_arc_gain():
+    """j and l must still spin at the full rate."""
+    assert MOVE_BINDINGS["j"] == (0.0, 1.0)
+    assert MOVE_BINDINGS["l"] == (0.0, -1.0)
+
+
+def test_stop_keys_are_zero():
+    assert MOVE_BINDINGS["k"] == (0.0, 0.0)
+    assert MOVE_BINDINGS[" "] == (0.0, 0.0)
