@@ -97,7 +97,7 @@ never drive a track backwards — that holds at any speed, with no clamping.
 unaffected.
 
 `motor_node` stops the tracks if `/cmd_vel` goes quiet for `cmd_timeout`
-(0.5 s) and on shutdown. Start with `-p max_rpm:=20` the first time: `rpm_per_mps`
+(0.5 s) and on shutdown. Start with `-p max_rpm:=20.0` the first time: `rpm_per_mps`
 is still uncalibrated, so commanded m/s are only proportional, not absolute.
 
 Tests need neither ROS nor hardware:
@@ -447,6 +447,7 @@ Python caches and virtualenvs, kernel module build artifacts, and editor/OS junk
 | Simulator target does nothing, error printed to terminal | Parse and IK failures go to stdout, not the GUI. Check the launching terminal. |
 | IK angles look sane, arm moves to the wrong place | A stale constant in `calibration.py` after re-zeroing a joint, or a pose that saturated at an end stop. |
 | Arm moves the wrong direction on one joint | Stick and bucket have **negative** slopes; a sign flip inverts exactly one joint. |
+| `InvalidParameterTypeException: ... 'INTEGER', expecting type 'DOUBLE'` | ROS 2 infers the parameter type from the declared default, so a float parameter needs a decimal point on the command line: `-p max_rpm:=20.0`, not `:=20`. Every tunable in `excavator_control` is a float. |
 | `colcon build` can't find `realsense2_camera` / `rtabmap_*` | The third-party overlay isn't sourced: `source ~/ros2_ws/install/setup.bash` before building. |
 | The ground in front of the machine shows as an obstacle | Almost always `cam_pitch` or `cam_z` in the xacro, not a costmap problem. See [Before it can drive](#before-it-can-drive). |
 | Costmap stays empty; no camera transform | `swing_joint` is revolute, so `robot_state_publisher` emits nothing for the camera until `/joint_states` exists. Check `joint_state_bridge` is running. |

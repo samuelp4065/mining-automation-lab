@@ -67,8 +67,8 @@ MOVE_BINDINGS = {
 #: ``ratio`` times the outer track's speed: 1.0 is straight, 0.0 stops the
 #: inner track and pivots about it. Lower the ratio for a tighter curve.
 ARC_BINDINGS = {
-    "u": ("forward", "left", 0.2),     # forward, left track at 20% of right
-    "o": ("forward", "right", 0.2),    # forward, right track at 20% of left
+    "u": ("forward", "left", 0.1),     # forward, left track at 20% of right
+    "o": ("forward", "right", 0.1),    # forward, right track at 20% of left
     ".": ("reverse", "left", 0.2),     # reverse, left track at 20% of right
     "m": ("reverse", "right", 0.2),    # reverse, right track at 20% of left
 }
