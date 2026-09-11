@@ -32,9 +32,10 @@ from tf2_ros import TransformBroadcaster
 
 from . import lss
 from . import lss_const as lssc
-
-LEFT_TRACK_ID = 0
-RIGHT_TRACK_ID = 1
+from .drive_config import (
+    DEFAULT_PORT, DEFAULT_TRACK_SEPARATION, LEFT_ID, LEFT_SIGN, RIGHT_ID,
+    RIGHT_SIGN,
+)
 
 
 def yaw_to_quaternion(yaw):
@@ -48,12 +49,12 @@ class TrackOdometry(Node):
     def __init__(self):
         super().__init__("track_odometry")
 
-        self.declare_parameter("port", "/dev/ttyUSB0")
+        self.declare_parameter("port", DEFAULT_PORT)
         self.declare_parameter("publish_tf", True)
         self.declare_parameter("publish_rate", 20.0)
         # MEASURE both of these on the machine; they set the scale of every
         # distance nav2 believes it has travelled.
-        self.declare_parameter("track_separation", 0.36)   # m, centre-to-centre
+        self.declare_parameter("track_separation", DEFAULT_TRACK_SEPARATION)
         self.declare_parameter("counts_per_metre", 1000.0)  # LSS position units per metre
 
         port = self.get_parameter("port").value
@@ -63,8 +64,8 @@ class TrackOdometry(Node):
         rate = self.get_parameter("publish_rate").value
 
         lss.initBus(port, lssc.LSS_DefaultBaud)
-        self.left = lss.LSS(LEFT_TRACK_ID)
-        self.right = lss.LSS(RIGHT_TRACK_ID)
+        self.left = lss.LSS(LEFT_ID)
+        self.right = lss.LSS(RIGHT_ID)
 
         self.x = 0.0
         self.y = 0.0
@@ -117,9 +118,12 @@ class TrackOdometry(Node):
             self.last_time = now
             return
 
-        # Right track is mirrored: forward motion counts the opposite way.
-        d_left = (left - self.last_left) / self.counts_per_m
-        d_right = -(right - self.last_right) / self.counts_per_m
+        # Apply the same mirroring motor_node uses when commanding, so a
+        # forward command integrates as forward travel. LEFT is the mirrored
+        # servo (see drive_config); getting this backwards makes the machine
+        # report driving away from where it actually went.
+        d_left = LEFT_SIGN * (left - self.last_left) / self.counts_per_m
+        d_right = RIGHT_SIGN * (right - self.last_right) / self.counts_per_m
         self.last_left, self.last_right = left, right
 
         dt = (now - self.last_time).nanoseconds * 1e-9

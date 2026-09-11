@@ -1,280 +1,139 @@
-#!/usr/bin/env python3
+"""Differential (skid-steer) drive for the two tracks, from /cmd_vel.
+
+Replaces an earlier single-servo bring-up version that drove only LSS ID 0 and
+discarded angular.z entirely, so the machine could go forwards but never turn.
+
+    ros2 run excavator_control motor_node
+    ros2 run teleop_twist_keyboard teleop_twist_keyboard
+
+Safety
+------
+A teleop drive node with no timeout is genuinely dangerous on a tracked
+machine: if the publisher dies, the terminal closes, or the network drops, the
+last command keeps executing and the excavator keeps driving. The watchdog
+below stops the tracks when /cmd_vel goes quiet, and the tracks are also
+stopped on shutdown. Do not disable either.
+
+Only one process may own /dev/ttyUSB0. Stop the curses teleop scripts, and
+note that track_odometry and joint_state_bridge share this bus -- running them
+alongside this node is fine, but a second *teleop* is not.
+"""
 
 import rclpy
-from rclpy.node import Node
 from geometry_msgs.msg import Twist
+from rclpy.node import Node
 
 from . import lss
 from . import lss_const as lssc
-
-# =======================
-# LSS CONFIG
-# =======================
-CST_LSS_Port = "/dev/ttyUSB0"
-CST_LSS_Baud = lssc.LSS_DefaultBaud
-LSS_ID = 0   # wheel servo ID
-
-# =======================
-# WHEEL PARAMETERS
-# =======================
-MAX_WHEEL_SPEED = 200    # LSS wheel speed limit
-# CMD_TIMEOUT_SEC = 2
+from .drive_config import (
+    DEFAULT_MAX_RPM, DEFAULT_PORT, DEFAULT_RPM_PER_MPS,
+    DEFAULT_TRACK_SEPARATION, LEFT_ID, LEFT_SIGN, RIGHT_ID, RIGHT_SIGN,
+    twist_to_track_speeds,
+)
 
 
 class MotorNode(Node):
     def __init__(self):
-        super().__init__('motor_node')
+        super().__init__("motor_node")
 
-        # ---- Init LSS bus ----
-        lss.initBus(CST_LSS_Port, CST_LSS_Baud)
-        self.lss = lss.LSS(LSS_ID)
+        self.declare_parameter("port", DEFAULT_PORT)
+        self.declare_parameter("track_separation", DEFAULT_TRACK_SEPARATION)
+        self.declare_parameter("rpm_per_mps", DEFAULT_RPM_PER_MPS)
+        self.declare_parameter("max_rpm", DEFAULT_MAX_RPM)
+        self.declare_parameter("cmd_timeout", 0.5)
 
-        self.get_logger().info("LSS wheel motor initialized")
+        port = self.get_parameter("port").value
+        self.separation = self.get_parameter("track_separation").value
+        self.rpm_per_mps = self.get_parameter("rpm_per_mps").value
+        self.max_rpm = self.get_parameter("max_rpm").value
+        self.cmd_timeout = self.get_parameter("cmd_timeout").value
 
-        # ---- State ----
+        lss.initBus(port, lssc.LSS_DefaultBaud)
+        self.left = lss.LSS(LEFT_ID)
+        self.right = lss.LSS(RIGHT_ID)
+
         self.last_cmd_time = self.get_clock().now()
-        self.current_speed = 0
+        self.stopped = True
+        self._stop()
 
-        # ---- Subscriber ----
-        self.sub = self.create_subscription(
-            Twist,
-            '/cmd_vel',
-            self.cmd_callback,
-            10
-        )
-
-        # ---- Watchdog timer ----
-        # self.create_timer(0.1, self.watchdog)
-
-    # =======================
-    # CALLBACK
-    # =======================
-    def cmd_callback(self, msg: Twist):
-        self.last_cmd_time = self.get_clock().now()
-
-        linear = msg.linear.x     # forward/back
-        angular = msg.angular.z  # turning
-
-        # Simple differential-wheel logic (single wheel)
-        speed = linear * MAX_WHEEL_SPEED
-
-        # Clamp speed
-        speed = max(-MAX_WHEEL_SPEED, min(MAX_WHEEL_SPEED, speed))
-        speed = int(speed)
-
-        self.current_speed = speed
-        self.lss.wheel(speed)
+        self.create_subscription(Twist, "cmd_vel", self._on_cmd_vel, 10)
+        self.create_timer(0.1, self._watchdog)
 
         self.get_logger().info(
-            f"cmd_vel linear={linear:.2f} → wheel speed={speed}"
+            f"motor_node on {port}: separation={self.separation} m, "
+            f"{self.rpm_per_mps} rpm per m/s, max {self.max_rpm} rpm, "
+            f"watchdog {self.cmd_timeout} s"
         )
 
-    # =======================
-    # SAFETY WATCHDOG
-    # =======================
-    # def watchdog(self):
-    #     elapsed = (
-    #         self.get_clock().now() - self.last_cmd_time
-    #     ).nanoseconds * 1e-9
+    def _clamp(self, rpm):
+        return max(-self.max_rpm, min(self.max_rpm, rpm))
 
-    #     if elapsed > CMD_TIMEOUT_SEC:
-    #         if self.current_speed != 0:
-    #             self.lss.wheel(0)
-    #             self.current_speed = 0
-    #             self.get_logger().warn("Wheel stopped (timeout)")
+    def _on_cmd_vel(self, msg):
+        self.last_cmd_time = self.get_clock().now()
 
-    # =======================
-    # CLEAN SHUTDOWN
-    # =======================
-    def destroy_node(self):
-        self.lss.wheel(0)
-        super().destroy_node()
+        v_left, v_right = twist_to_track_speeds(
+            msg.linear.x, msg.angular.z, self.separation
+        )
+
+        rpm_left = self._clamp(v_left * self.rpm_per_mps)
+        rpm_right = self._clamp(v_right * self.rpm_per_mps)
+
+        # Scale both together if either saturates, so a clamped turn keeps its
+        # shape instead of straightening out as one track hits the ceiling.
+        peak = max(abs(rpm_left), abs(rpm_right))
+        if peak > self.max_rpm:
+            scale = self.max_rpm / peak
+            rpm_left *= scale
+            rpm_right *= scale
+
+        self._drive(rpm_left, rpm_right)
+        self.stopped = False
+
+    def _drive(self, rpm_left, rpm_right):
+        try:
+            self.left.wheelRPM(int(round(LEFT_SIGN * rpm_left)))
+            self.right.wheelRPM(int(round(RIGHT_SIGN * rpm_right)))
+        except Exception as exc:
+            self.get_logger().error(f"LSS write failed: {exc}",
+                                    throttle_duration_sec=2.0)
+
+    def _stop(self):
+        self._drive(0.0, 0.0)
+        self.stopped = True
+
+    def _watchdog(self):
+        """Stop the tracks when /cmd_vel goes quiet.
+
+        Most teleop publishers stop sending rather than sending zeros when a
+        key is released or the process dies, so without this the last non-zero
+        command would run indefinitely.
+        """
+        if self.stopped:
+            return
+        elapsed = (self.get_clock().now() - self.last_cmd_time).nanoseconds * 1e-9
+        if elapsed > self.cmd_timeout:
+            self.get_logger().warn(
+                f"no cmd_vel for {elapsed:.2f} s; stopping tracks"
+            )
+            self._stop()
 
 
-def main():
-    rclpy.init()
+def main(args=None):
+    rclpy.init(args=args)
     node = MotorNode()
-    rclpy.spin(node)
-    node.destroy_node()
-    rclpy.shutdown()
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        # Leaving the tracks driving on exit is how a machine runs away.
+        try:
+            node._stop()
+        except Exception:
+            pass
+        node.destroy_node()
+        rclpy.try_shutdown()
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
-
-
-
-
-
-
-
-
-# #!/usr/bin/env python3
-
-# import rclpy
-# from rclpy.node import Node
-# from geometry_msgs.msg import Twist
-
-# from . import lss
-# from . import lss_const as lssc
-
-# # =======================
-# # LSS CONFIG
-# # =======================
-# CST_LSS_Port = "/dev/ttyUSB0"
-# CST_LSS_Baud = lssc.LSS_DefaultBaud
-# LSS_ID = 0
-
-# # =======================
-# # SERVO LIMITS
-# # =======================
-# SERVO_MIN_DEG = -90.0
-# SERVO_MAX_DEG =  90.0
-# SERVO_CENTER_DEG = 0.0
-
-# # =======================
-# # SAFETY
-# # =======================
-# CMD_TIMEOUT_SEC = 0.5
-
-
-# class MotorNode(Node):
-#     def __init__(self):
-#         super().__init__('motor_node')
-
-#         # ---- Init LSS bus ----
-#         lss.initBus(CST_LSS_Port, CST_LSS_Baud)
-#         self.lss = lss.LSS(LSS_ID)
-
-#         self.get_logger().info("LSS initialized")
-
-#         # ---- Servo state ----
-#         self.current_angle_deg = SERVO_CENTER_DEG
-#         self.last_cmd_time = self.get_clock().now()
-
-#         # ---- Subscriber ----
-#         self.sub = self.create_subscription(
-#             Twist,
-#             '/cmd_vel',
-#             self.cmd_callback,
-#             10
-#         )
-
-#         # ---- Watchdog timer ----
-#         self.create_timer(0.1, self.watchdog)
-
-#     # =======================
-#     # CALLBACK
-#     # =======================
-#     def cmd_callback(self, msg: Twist):
-#         self.last_cmd_time = self.get_clock().now()
-
-#         linear = msg.linear.x   # i / ,
-#         speed_scale = 60.0      # deg/sec feel
-
-#         # Incremental joint control
-#         self.current_angle_deg += linear * speed_scale * 0.1
-
-#         # Clamp limits
-#         self.current_angle_deg = max(
-#             SERVO_MIN_DEG,
-#             min(SERVO_MAX_DEG, self.current_angle_deg)
-#         )
-
-#         # Convert to LSS units (0.1 deg)
-#         angle_lss = int(self.current_angle_deg * 10)
-
-#         self.lss.move(angle_lss)
-
-#         self.get_logger().info(
-#             f"cmd_vel={linear:.2f} → servo={self.current_angle_deg:.1f} deg"
-#         )
-
-#     # =======================
-#     # SAFETY WATCHDOG
-#     # =======================
-#     def watchdog(self):
-#         elapsed = (
-#             self.get_clock().now() - self.last_cmd_time
-#         ).nanoseconds * 1e-9
-
-#         if elapsed > CMD_TIMEOUT_SEC:
-#             self.lss.move(int(self.current_angle_deg * 10))
-
-#     # =======================
-#     # CLEAN SHUTDOWN
-#     # =======================
-#     def destroy_node(self):
-#         self.lss.move(int(SERVO_CENTER_DEG * 10))
-#         super().destroy_node()
-
-
-# def main():
-#     rclpy.init()
-#     node = MotorNode()
-#     rclpy.spin(node)
-#     node.destroy_node()
-#     rclpy.shutdown()
-
-
-# if __name__ == '__main__':
-#     main()
-
-
-
-
-
-
-
-
-
-
-# #!/usr/bin/env python3
-# import time
-# import rclpy
-# from rclpy.node import Node
-# from std_msgs.msg import Int32
-
-# from . import lss
-# from . import lss_const as lssc
-
-# CST_LSS_Port = "/dev/ttyUSB0"
-# CST_LSS_Baud = lssc.LSS_DefaultBaud
-# LSS_ID = 0
-
-
-# class MotorNode(Node):
-#     def __init__(self):
-#         super().__init__('motor_node')
-
-#         # Init LSS bus
-#         lss.initBus(CST_LSS_Port, CST_LSS_Baud)
-#         self.lss = lss.LSS(LSS_ID)
-
-#         self.get_logger().info("LSS initialized")
-
-#         # Subscriber
-#         self.sub = self.create_subscription(
-#             Int32,
-#             'lss_position',
-#             self.cmd_callback,
-#             10
-#         )
-        
-
-#     def cmd_callback(self, msg):
-#         pos = msg.data  # LSS uses 0.1 deg units
-#         self.lss.move(pos)
-#         self.get_logger().info(f"Moving LSS to {pos/10.0:.1f} deg")
-
-
-# def main():
-#     rclpy.init()
-#     motor_node = MotorNode()
-#     rclpy.spin(motor_node)
-#     motor_node.destroy_node()
-#     rclpy.shutdown()
-
-
-# if __name__ == '__main__':
-#     main()
