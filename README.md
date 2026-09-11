@@ -86,10 +86,15 @@ ros2 run excavator_control teleop_keyboard   # terminal 2: keyboard
 | `k`, space | stop |
 | `q`/`z`, `w`/`x`, `e`/`c` | scale both / speed only / turn only |
 
-The arc keys scale their turn by `arc_gain` (default `0.4`) so they curve
-rather than swinging the machine — on a skid-steer, a full-rate turn combined
-with full forward makes the inside track slip hard. Tune with
-`--ros-args -p arc_gain:=0.25`.
+Arc keys are written as **inner-track ratio** — `("forward", "left", 0.2)`
+means *drive forward with the left track at 20% of the right*. A ratio of 1.0
+is straight, 0.0 stops the inner track and pivots about it. Lower it for a
+tighter curve.
+
+Because the inner track is defined as a fraction of the outer one, an arc can
+never drive a track backwards — that holds at any speed, with no clamping.
+`j` and `l` are ordinary twists and still counter-rotate, so pivoting is
+unaffected.
 
 `motor_node` stops the tracks if `/cmd_vel` goes quiet for `cmd_timeout`
 (0.5 s) and on shutdown. Start with `-p max_rpm:=20` the first time: `rpm_per_mps`

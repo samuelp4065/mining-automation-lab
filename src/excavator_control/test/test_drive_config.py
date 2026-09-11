@@ -83,10 +83,17 @@ def test_saturation_scaling_preserves_turn_shape():
 # --- teleop key bindings ----------------------------------------------------
 
 from excavator_control.teleop_keyboard import (  # noqa: E402
-    ARC_BINDINGS, MOVE_BINDINGS, SPEED_BINDINGS,
+    ARC_BINDINGS, MOVE_BINDINGS, SPEED_BINDINGS, arc_to_twist,
 )
 
-ARC_GAIN = 0.4
+SPEED = 0.3
+
+
+def arc_tracks(key, speed=SPEED, separation=SEP):
+    """Track speeds an arc key produces, via the same path the node uses."""
+    travel, inner, ratio = ARC_BINDINGS[key]
+    v, w = arc_to_twist(travel, inner, ratio, speed, separation)
+    return twist_to_track_speeds(v, w, separation)
 
 
 def test_no_key_is_bound_twice():
@@ -97,34 +104,86 @@ def test_no_key_is_bound_twice():
             assert not (a & b), f"key bound in two tables: {a & b}"
 
 
-def test_arc_keys_turn_gentler_than_spin_keys():
-    """u and o must curve, not swing. This is the whole point of the table."""
-    _, arc_turn = ARC_BINDINGS["u"]
-    _, spin_turn = MOVE_BINDINGS["j"]
-    assert abs(arc_turn * ARC_GAIN) < abs(spin_turn)
+@pytest.mark.parametrize("key", list(ARC_BINDINGS))
+@pytest.mark.parametrize("speed", [0.05, 0.3, 1.0, 3.0])
+def test_arc_keys_never_reverse_a_track(key, speed):
+    """The whole point of the ratio parameterisation.
+
+    Unlike a clamp, this must hold at every speed without any guarding code,
+    because the inner track is defined as a fraction of the outer one.
+    """
+    left, right = arc_tracks(key, speed=speed)
+    same_way = (left >= -1e-12 and right >= -1e-12) or \
+               (left <= 1e-12 and right <= 1e-12)
+    assert same_way, f"{key} at speed {speed}: left={left:.4f} right={right:.4f}"
 
 
-def test_arc_keys_still_drive_forward_at_full_speed():
-    """Only the turn component is scaled; forward speed is untouched."""
-    assert ARC_BINDINGS["u"][0] == MOVE_BINDINGS["i"][0]
-    assert ARC_BINDINGS["o"][0] == MOVE_BINDINGS["i"][0]
+@pytest.mark.parametrize("key", list(ARC_BINDINGS))
+def test_inner_track_runs_at_the_requested_ratio(key):
+    """The number in the table means what it says."""
+    _, inner, ratio = ARC_BINDINGS[key]
+    left, right = arc_tracks(key)
+    inner_speed, outer_speed = (left, right) if inner == "left" else (right, left)
+    assert inner_speed == pytest.approx(ratio * outer_speed, abs=1e-12)
 
 
-def test_u_and_o_arc_in_opposite_directions():
-    assert ARC_BINDINGS["u"][1] == -ARC_BINDINGS["o"][1]
+@pytest.mark.parametrize("key", list(ARC_BINDINGS))
+def test_outer_track_runs_at_full_speed(key):
+    """Speed is defined as the outer track's speed."""
+    _, inner, _ = ARC_BINDINGS[key]
+    left, right = arc_tracks(key)
+    outer = right if inner == "left" else left
+    assert abs(outer) == pytest.approx(SPEED)
 
 
-def test_reverse_arcs_use_the_same_gain_as_forward_arcs():
-    """Forward and reverse diagonals must behave symmetrically."""
-    assert abs(ARC_BINDINGS["m"][1]) == abs(ARC_BINDINGS["u"][1])
-    assert abs(ARC_BINDINGS["."][1]) == abs(ARC_BINDINGS["o"][1])
-    assert ARC_BINDINGS["m"][0] < 0 and ARC_BINDINGS["."][0] < 0
+def test_ratio_one_drives_straight():
+    v, w = arc_to_twist("forward", "left", 1.0, SPEED, SEP)
+    assert w == pytest.approx(0.0)
+    assert v == pytest.approx(SPEED)
 
 
-def test_spin_keys_are_unaffected_by_arc_gain():
-    """j and l must still spin at the full rate."""
-    assert MOVE_BINDINGS["j"] == (0.0, 1.0)
-    assert MOVE_BINDINGS["l"] == (0.0, -1.0)
+def test_ratio_zero_stops_the_inner_track_without_reversing_it():
+    v, w = arc_to_twist("forward", "left", 0.0, SPEED, SEP)
+    left, right = twist_to_track_speeds(v, w, SEP)
+    assert left == pytest.approx(0.0)
+    assert right == pytest.approx(SPEED)
+
+
+def test_ratio_outside_zero_to_one_is_clamped():
+    """A negative ratio would mean a reversing inner track; refuse it."""
+    assert arc_to_twist("forward", "left", -0.5, SPEED, SEP) == \
+           arc_to_twist("forward", "left", 0.0, SPEED, SEP)
+    assert arc_to_twist("forward", "left", 2.0, SPEED, SEP) == \
+           arc_to_twist("forward", "left", 1.0, SPEED, SEP)
+
+
+def test_left_and_right_arcs_steer_opposite_ways():
+    _, w_left = arc_to_twist("forward", "left", 0.2, SPEED, SEP)
+    _, w_right = arc_to_twist("forward", "right", 0.2, SPEED, SEP)
+    assert w_left == pytest.approx(-w_right)
+    assert w_left > 0        # slowing the left track turns left
+
+
+def test_reverse_arcs_travel_backwards():
+    for key in (".", "m"):
+        left, right = arc_tracks(key)
+        assert left < 0 and right < 0
+
+
+def test_every_steering_direction_is_reachable():
+    """Forward-left, forward-right, reverse-left and reverse-right all exist."""
+    assert {(travel, inner) for travel, inner, _ in ARC_BINDINGS.values()} == {
+        ("forward", "left"), ("forward", "right"),
+        ("reverse", "left"), ("reverse", "right"),
+    }
+
+
+def test_spin_keys_still_counter_rotate():
+    """The arc parameterisation must not take pivoting away."""
+    for key in ("j", "l"):
+        _, turn = MOVE_BINDINGS[key]
+        left, right = twist_to_track_speeds(0.0, turn * 0.8, SEP)
+        assert left * right < 0, "j/l must drive the tracks opposite ways"
 
 
 def test_stop_keys_are_zero():
