@@ -1,0 +1,81 @@
+# EKF fusing track odometry with the D435i IMU.
+#
+# The division of labour is the whole point of this file:
+#
+#   track_odometry  ->  x velocity        (tracks measure distance well)
+#   imu_filter      ->  yaw + yaw rate    (a gyro measures heading well)
+#
+# A skid-steer excavator turns by making its tracks slip sideways on purpose.
+# That means wheel-derived heading is wrong by construction, not by poor
+# calibration, and no amount of tuning counts_per_metre will fix it. The gyro
+# does not care about slip, so heading comes from there instead.
+#
+# This node owns the odom -> base_footprint transform. track_odometry must be
+# launched with publish_tf:=false whenever this is running, or the two will
+# publish conflicting transforms for the same frame pair and TF will jitter
+# between them.
+
+ekf_filter_node:
+  ros__parameters:
+    frequency: 30.0
+    sensor_timeout: 0.2
+    two_d_mode: true              # tracked vehicle on a pit floor: no roll/pitch/z
+    publish_tf: true
+    print_diagnostics: true
+
+    map_frame: map
+    odom_frame: odom
+    base_link_frame: base_footprint
+    world_frame: odom             # odom -> base_footprint; AMCL supplies map -> odom
+
+    # ---- Track odometry -------------------------------------------------
+    # Fuse x VELOCITY only, never absolute pose. Integrated wheel position
+    # drifts without bound; velocity does not accumulate the same error.
+    # yaw and yaw velocity are deliberately excluded here so the slip-prone
+    # term never enters the filter -- that is the IMU's job below.
+    odom0: /odom
+    odom0_config: [false, false, false,     # x,    y,    z
+                   false, false, false,     # roll, pitch, yaw
+                   true,  false, false,     # vx,   vy,   vz      <- tracks
+                   false, false, false,     # vroll,vpitch,vyaw
+                   false, false, false]     # ax,   ay,   az
+    odom0_differential: false
+    odom0_relative: false
+    odom0_queue_size: 10
+
+    # ---- IMU ------------------------------------------------------------
+    # Absolute yaw plus yaw rate. The D435i has no magnetometer, so this yaw
+    # is gyro-integrated and will drift slowly over a long session -- but it
+    # drifts far slower than track-derived heading, and AMCL corrects the
+    # remainder against the map.
+    #
+    # Linear acceleration is NOT fused: double-integrating a MEMS accelerometer
+    # on a machine that vibrates like this one adds noise, not information.
+    imu0: /imu/data
+    imu0_config: [false, false, false,
+                  false, false, true,       # yaw                 <- IMU
+                  false, false, false,
+                  false, false, true,       # vyaw                <- IMU
+                  false, false, false]
+    imu0_differential: false
+    imu0_relative: true           # start from the current heading, not magnetic north
+    imu0_queue_size: 10
+    imu0_remove_gravitational_acceleration: true
+
+    # Process noise. Yaw (index 5) is loose so the filter trusts the IMU over
+    # its own prediction; x (index 0) is tighter since track distance is good.
+    process_noise_covariance: [0.02, 0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,
+                               0.0,  0.02, 0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,
+                               0.0,  0.0,  0.04, 0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,
+                               0.0,  0.0,  0.0,  0.01, 0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,
+                               0.0,  0.0,  0.0,  0.0,  0.01, 0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,
+                               0.0,  0.0,  0.0,  0.0,  0.0,  0.06, 0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,
+                               0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.03, 0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,
+                               0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.03, 0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,
+                               0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.04, 0.0,  0.0,  0.0,  0.0,  0.0,  0.0,
+                               0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.01, 0.0,  0.0,  0.0,  0.0,  0.0,
+                               0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.01, 0.0,  0.0,  0.0,  0.0,
+                               0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.02, 0.0,  0.0,  0.0,
+                               0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.01, 0.0,  0.0,
+                               0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.01, 0.0,
+                               0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.015]
