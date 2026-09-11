@@ -20,7 +20,8 @@ multi-hour third-party compile.
 - [Pipeline](#pipeline)
 - [Calibration](#calibration)
 - [Hardware topology](#hardware-topology)
-- [Perception](#perception)
+- [Navigation and obstacle avoidance](#navigation-and-obstacle-avoidance)
+- [Before it can drive](#before-it-can-drive)
 - [Reference scripts](#reference-scripts)
 - [What is not tracked here](#what-is-not-tracked-here)
 - [Troubleshooting](#troubleshooting)
@@ -34,7 +35,8 @@ multi-hour third-party compile.
 | `src/excavator_kinematics/` | **The** IK/FK and joint calibration. Pure Python — no ROS, no hardware. 32 tests. |
 | `src/excavator_control/` | LSS bus, track drive, swingdrive, linear actuators. `scripts/` holds pre-ROS reference scripts. |
 | `src/excavator_perception/` | ArUco detection; depth-based dig-target extraction. |
-| `src/excavator_bringup/` | Launch files and RViz configs. |
+| `src/excavator_description/` | URDF/xacro and the TF tree. **Contains unmeasured placeholders** — see [Before it can drive](#before-it-can-drive). |
+| `src/excavator_bringup/` | Launch files, nav2 parameters, EKF configuration. |
 | `tools/simulator/` | Interactive Matplotlib arm simulator. |
 | `tools/drivers/CH341SER_LINUX/` | CH341 USB-to-serial kernel driver for the servo bus adapter. |
 | `upstream.repos` | vcstool manifest reconstructing the third-party overlay. |
@@ -51,11 +53,22 @@ colcon build --symlink-install
 source install/setup.bash
 ```
 
+No hardware required:
+
 ```bash
-ros2 run excavator_kinematics ik_repl         # pose → angles → servo commands, no hardware
-python3 tools/simulator/arm_simulator.py      # interactive simulator
-ros2 launch excavator_bringup full_launch.py  # RealSense + RTAB-Map SLAM
-ros2 run excavator_control motor_node         # track drive from /cmd_vel
+ros2 run excavator_kinematics ik_repl        # pose → angles → servo commands
+python3 tools/simulator/arm_simulator.py     # interactive arm simulator
+ros2 launch excavator_description description.launch.py joint_mode:=simulate
+```
+
+On the machine:
+
+```bash
+ros2 launch excavator_bringup mapping.launch.py           # ONE TIME: build the pit map
+ros2 run nav2_map_server map_saver_cli -f ~/maps/pit_map
+
+ros2 launch excavator_bringup navigation.launch.py map:=~/maps/pit_map.yaml
+ros2 run excavator_control motor_node                     # track drive from /cmd_vel
 ```
 
 Tests need neither ROS nor hardware:
@@ -141,7 +154,12 @@ Angles are **radians** in and out; degrees appear only at UI boundaries.
 ## Pipeline
 
 ```
- RealSense D435i ──▶ rtabmap (2D grid) ──▶ nav2 ──▶ tracks     [ navigation ]
+ track encoders ──┐
+                  ├──▶ EKF ──▶ /odometry/filtered ──┐
+ D435i IMU ───────┘                                 │
+                                                    ▼
+ RealSense D435i ──▶ depth → /scan ──▶ AMCL ──▶ nav2 ──▶ tracks   [ navigation ]
+                  └▶ point cloud ──▶ height-banded costmap ──┘
 
  RealSense D435i ──▶ live aligned depth ──▶ transform to arm base frame
                                                    │
@@ -158,9 +176,9 @@ Angles are **radians** in and out; degrees appear only at UI boundaries.
 ```
 
 Navigation and digging stay separate on purpose: **drive from the map, dig from the
-live frame.** The RTAB-Map occupancy grid is downsampled and accumulates drift, so it
-is the wrong source for a bucket target even though it is the right source for planning
-a route.
+live frame.** The occupancy grid is downsampled and accumulates drift, so it is the
+wrong source for a bucket target even though it is the right source for planning a
+route.
 
 ## Calibration
 
@@ -240,17 +258,125 @@ JetPack kernel sources, not the generic `linux-headers` package. After loading, 
 adapter appears as `/dev/ttyCH341USB0` or `/dev/ttyUSB0`, and your user must be in
 `dialout`.
 
-## Perception
+## Navigation and obstacle avoidance
 
-`full_launch.py` runs RealSense → `rgbd_sync` → `rgbd_odometry` → `rtabmap` with
-`Reg/Force3DoF=true` and `Grid/3D=false` — a 2D occupancy grid, which is the right
-choice for a tracked vehicle and the only thing nav2 can plan on.
+The map is built **once** and localised against thereafter. Running SLAM continuously
+would accumulate drift through every shift for no benefit, since the pit does not
+change shape.
 
-**Known gap:** `rgbd_odometry` is currently the only odometry source, and the D435i's
-IMU is not enabled in the launch. Pure visual odometry is fragile exactly where this
-machine works — a vibrating tracked chassis, skid-steer rotation, and a low-texture
-limestone face. `imu_filter_madgwick` is installed and declared in the bringup manifest
-but not yet wired in; doing so is the highest-value next change to the perception stack.
+```bash
+ros2 launch excavator_bringup mapping.launch.py           # drive the whole working area
+ros2 run nav2_map_server map_saver_cli -f ~/maps/pit_map  # then never map again
+ros2 launch excavator_bringup navigation.launch.py map:=~/maps/pit_map.yaml
+```
+
+### Why not RTAB-Map
+
+RTAB-Map is appearance-based visual SLAM: its strength is recognising places from
+visual features, which requires visual texture. This machine works against a
+low-texture limestone face, from a chassis that vibrates, steering by slipping its
+tracks. That is all three classic visual-odometry failure modes at once, and it is the
+normal operating condition rather than an edge case — so the stack was paying RTAB-Map's
+considerable RAM and CPU cost for a capability the environment defeats.
+
+`full_launch.py` is kept as the legacy RTAB-Map launch for comparison. Nothing in the
+current navigation path uses it.
+
+### Odometry
+
+Two sensors, each doing what it is good at:
+
+| Source | Contributes | Why |
+| ------ | ----------- | --- |
+| Track encoders (`track_odometry`) | forward velocity | Tracks measure distance well |
+| D435i gyro (`imu_filter_madgwick`) | yaw and yaw rate | A gyro is unaffected by slip |
+
+A skid-steer machine turns by making its tracks slip sideways **on purpose**, so
+heading derived from track encoders is wrong by construction, not by poor calibration.
+No amount of tuning `counts_per_metre` fixes it. `config/ekf.yaml` therefore fuses only
+track *velocity* and IMU *heading*, and the node's yaw covariance is deliberately
+pessimistic (0.30) to say so.
+
+Exactly one node may own the `odom → base_footprint` transform. When the EKF runs it
+takes that job, and `track_odometry` is launched with `publish_tf:=false`; otherwise TF
+flips between two disagreeing transforms for the same frame pair.
+
+### Height-banded obstacle avoidance
+
+A 2D laser scan collapses the depth image to one horizontal slice, in which a limestone
+pile and a concrete wall are indistinguishable. That is exactly the information needed
+to tell a dig target from an obstacle, so obstacle marking uses the **point cloud**
+instead, and both costmaps use `VoxelLayer` with two sources doing different jobs:
+
+| Source | Role | Reason |
+| ------ | ---- | ------ |
+| Point cloud | **marks**, height-filtered | Height separates material from obstacle |
+| `/scan` | **clears** only, never marks | So it cannot reintroduce what the filter removed |
+
+Bands, measured above `base_footprint`:
+
+| Height | Interpretation |
+| ------ | -------------- |
+| below 0.10 m | ground and loose material — ignored |
+| 0.10 – 0.40 m | limestone pile — diggable, not an obstacle |
+| above 0.40 m | genuine obstacle — marked and avoided |
+
+Raising `min_obstacle_height` makes the machine willing to drive into bigger piles;
+lowering it makes it treat rubble as a wall. The global costmap uses `VoxelLayer` too,
+not the stock `ObstacleLayer` — otherwise a pile the local costmap correctly ignored
+would burn into the global map as a permanent wall.
+
+The same point cloud, transformed into `arm_base_frame`, is what supplies the dig
+target. One pipeline serves both navigation and digging.
+
+### Sensor limits worth designing around
+
+- The D435i is **blind closer than ~0.3 m**. On a machine with an arm swinging in front
+  of it, do not rely on the camera for close-in protection.
+- FOV is **~87° × 58°, forward only**. Nothing to the sides or rear; when the cab
+  rotates or the machine reverses, it is driving blind.
+
+## Before it can drive
+
+Everything above builds and the TF tree is verified, but three things are placeholders.
+Until they are real, the navigation stack will run and do the wrong thing rather than
+fail loudly.
+
+### 1. Measure the machine
+
+Every value marked `MEASURE` in `src/excavator_description/urdf/excavator.urdf.xacro`
+is currently a guess: chassis dimensions, track separation, and the camera mount
+(`cam_x`, `cam_y`, `cam_z`, `cam_pitch`).
+
+The camera transform matters most. Every height threshold above is measured from
+`base_footprint` through that transform, so a wrong `cam_pitch` tilts the whole point
+cloud and the ground in front of the machine reads as an untraversable wall. This is
+the most common way this setup fails, and it looks like a costmap bug rather than a
+measurement error.
+
+Rebuild after editing — the URDF is installed to `share/`, so source edits do not take
+effect until `colcon build`.
+
+### 2. Calibrate the odometry scale
+
+`counts_per_metre` in `track_odometry` defaults to `1000.0`, which is a placeholder.
+Every distance nav2 believes it has travelled is arbitrary until this is measured:
+
+```bash
+ros2 run excavator_control track_odometry
+ros2 topic echo /odom --field pose.pose.position.x
+# drive a measured distance, compare, then set the parameter
+```
+
+`track_separation` in both the URDF and the odometry node must match the real
+centre-to-centre track spacing, or every turn will be scaled wrong.
+
+### 3. Map only once the first two are right
+
+Map quality is bounded by odometry quality. Every yaw error present during the mapping
+run is baked permanently into the map that AMCL then localises against for the life of
+the machine. Mapping against uncalibrated odometry produces a map you will have to
+throw away.
 
 ## Reference scripts
 
@@ -293,5 +419,11 @@ Python caches and virtualenvs, kernel module build artifacts, and editor/OS junk
 | IK angles look sane, arm moves to the wrong place | A stale constant in `calibration.py` after re-zeroing a joint, or a pose that saturated at an end stop. |
 | Arm moves the wrong direction on one joint | Stick and bucket have **negative** slopes; a sign flip inverts exactly one joint. |
 | `colcon build` can't find `realsense2_camera` / `rtabmap_*` | The third-party overlay isn't sourced: `source ~/ros2_ws/install/setup.bash` before building. |
+| The ground in front of the machine shows as an obstacle | Almost always `cam_pitch` or `cam_z` in the xacro, not a costmap problem. See [Before it can drive](#before-it-can-drive). |
+| Costmap stays empty; no camera transform | `swing_joint` is revolute, so `robot_state_publisher` emits nothing for the camera until `/joint_states` exists. Check `joint_state_bridge` is running. |
+| TF jitters between two poses for `base_footprint` | Both the EKF and `track_odometry` are publishing `odom → base_footprint`. The EKF owns it; `track_odometry` needs `publish_tf:=false`. |
+| `ekf_node`: `libdiagnostic_updater.so: cannot open shared object file` | `ros-humble-diagnostic-updater` 4.0.6 ships headers with no library. Upgrade to 4.0.7. |
+| Robot drifts in heading on every turn | Expected without the EKF — skid-steer yaw from tracks alone is wrong by construction. Launch with `use_ekf:=true` (the default). |
+| Nav2 reports no odometry / won't activate | `track_odometry` needs `/dev/ttyUSB0` and membership of `dialout`. Without the LSS bus there is no odometry source at all. |
 | No `/dev/ttyUSB*` after plugging in the adapter | CH341 module not loaded (`sudo make load`), or your user isn't in `dialout`. |
 | ArUco poses off by a constant scale factor | `marker_size` doesn't match the physically printed marker — printers rescale by default. |
