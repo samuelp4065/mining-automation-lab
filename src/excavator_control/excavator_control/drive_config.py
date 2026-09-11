@@ -40,6 +40,25 @@ DEFAULT_RPM_PER_MPS = 100.0
 DEFAULT_MAX_RPM = 60.0
 
 
+def scale_to_max_rpm(rpm_left, rpm_right, max_rpm):
+    """Hold both tracks under max_rpm without changing their ratio.
+
+    Clamping each track independently would silently straighten a turn: the
+    outer track pins at the ceiling while the inner keeps its value, so the
+    ratio between them drifts toward 1 as commanded speed rises, and the arc
+    flattens out. At high enough speed both tracks pin and the machine drives
+    dead straight while still being commanded to turn.
+
+    Scaling both by the same factor keeps the commanded shape and only reduces
+    how fast it is executed.
+    """
+    peak = max(abs(rpm_left), abs(rpm_right))
+    if peak > max_rpm and peak > 0.0:
+        scale = max_rpm / peak
+        return rpm_left * scale, rpm_right * scale
+    return rpm_left, rpm_right
+
+
 def declare_float(node, name, default):
     """Declare a float parameter that also accepts an integer on the CLI.
 
