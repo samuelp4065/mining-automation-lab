@@ -182,6 +182,49 @@ class OccupancyMap:
         mask = (rows - row_c) ** 2 + (cols - col_c) ** 2 <= radius_px ** 2
         self.grid[mask] = OCCUPIED
 
+    def add_polygon_wall(self, points, thickness_m=None):
+        """A closed wall following a sequence of (x, y) vertices, in metres.
+
+        For an irregular site (an L-shape, a stepped boundary) rather than a
+        simple rectangle. The polygon is closed automatically -- the last
+        vertex connects back to the first -- so list each corner once, in
+        order, walking the perimeter either direction.
+
+        Reuses add_line_obstacle per edge, so thickness and rasterisation
+        behave identically to a manually-drawn line.
+        """
+        if len(points) < 3:
+            raise ValueError("a polygon needs at least 3 vertices")
+        thickness_m = thickness_m or self.resolution * 2
+        n = len(points)
+        for i in range(n):
+            x1, y1 = points[i]
+            x2, y2 = points[(i + 1) % n]
+            self.add_line_obstacle(x1, y1, x2, y2, thickness_m=thickness_m)
+
+    def mark_polygon_free(self, points):
+        """Mark every pixel whose centre lies inside the polygon as free.
+
+        Standard even-odd ray-casting test, vectorised over the whole grid at
+        once. Works for any simple polygon regardless of winding direction or
+        convexity -- an L-shape's reflex corner needs no special handling.
+        Call this before add_polygon_wall so the boundary is not overwritten.
+        """
+        if len(points) < 3:
+            raise ValueError("a polygon needs at least 3 vertices")
+
+        cols = np.arange(self.px_width)
+        rows = np.arange(self.px_height)
+        # Pixel-CENTRE world coordinates (+0.5), not corners, so a boundary
+        # running exactly along a pixel edge does not flicker in or out
+        # depending on floating-point rounding.
+        xs = self.origin[0] + (cols + 0.5) * self.resolution
+        ys = self.origin[1] + (self.px_height - 1 - rows + 0.5) * self.resolution
+        x_grid, y_grid = np.meshgrid(xs, ys)
+
+        inside = _points_in_polygon(x_grid, y_grid, points)
+        self.grid[inside] = FREE
+
     def _fill_rect(self, x, y, w, h, value):
         r0, r1 = self._row_range(y, h)
         c0, c1 = self._col_range(x, w)
@@ -249,6 +292,65 @@ class OccupancyMap:
         with open(path, "wb") as f:
             f.write(header)
             f.write(self.grid.tobytes())
+
+
+def _points_in_polygon(x, y, polygon):
+    """Even-odd ray-casting test, vectorised. x, y: same-shape arrays.
+
+    Casts a horizontal ray from each point and counts polygon edge crossings;
+    odd means inside. Works for convex and reflex (concave) corners alike,
+    which is the case an L-shaped site needs and a naive bounding-box test
+    cannot express.
+    """
+    inside = np.zeros(x.shape, dtype=bool)
+    n = len(polygon)
+    j = n - 1
+    for i in range(n):
+        xi, yi = polygon[i]
+        xj, yj = polygon[j]
+        crosses = (yi > y) != (yj > y)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            x_intersect = (xj - xi) * (y - yi) / (yj - yi) + xi
+        inside ^= crosses & (x < x_intersect)
+        j = i
+    return inside
+
+
+def walk_to_vertices(start, heading_deg, steps):
+    """Turn a perimeter walk into absolute (x, y) vertices.
+
+    This is the natural way to enter measurements taken by walking a site's
+    boundary with a tape measure: at each corner you know how far you are
+    about to walk and which way you turned, not the vertex's coordinates.
+
+    Args:
+        start: (x, y) in metres, where the walk begins.
+        heading_deg: starting direction, standard math convention -- 0 is
+            +x (east), 90 is +y (north), degrees, increasing counterclockwise.
+        steps: list of (distance_m, turn_deg) pairs. distance_m is how far
+            you walk BEFORE turning; turn_deg is how much you turn at the
+            corner you just reached, positive for a left (counterclockwise)
+            turn, negative for right. A convex corner on a rectilinear
+            (right-angle) site is +90 or -90 depending on which way you are
+            walking around it; a REFLEX corner -- the inward notch of an
+            L-shape -- is the opposite sign of its neighbours. Getting a
+            single sign wrong here is exactly what turns an L into the wrong
+            shape, so check the result with preview() before trusting it.
+
+    Returns:
+        A list of vertices, one per step, NOT including the repeated closing
+        vertex -- pass this straight to add_polygon_wall / mark_polygon_free,
+        which close the loop themselves.
+    """
+    x, y = start
+    heading = float(heading_deg)
+    vertices = []
+    for distance, turn in steps:
+        x += distance * np.cos(np.radians(heading))
+        y += distance * np.sin(np.radians(heading))
+        vertices.append((x, y))
+        heading += turn
+    return vertices
 
 
 def _cli():
