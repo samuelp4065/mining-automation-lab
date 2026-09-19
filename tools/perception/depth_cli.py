@@ -374,6 +374,39 @@ def cmd_slice(args):
     return 0
 
 
+def sample_point(intr, at_pixel, at_frac):
+    """Which pixel to sample, as (u, v).
+
+    Defaults to the *optical* centre -- where the lens actually points --
+    rather than the geometric middle of the image. On this D435i those differ
+    by under a pixel, but the distinction matters on a camera with more
+    decentring, and the optical centre is the point whose deprojected x and y
+    are genuinely zero.
+
+    Fractions are resolution-independent, which matters because decimation
+    changes the frame size: --at-frac 0.5,0.5 is the middle whatever
+    --decimate is set to, while a fixed pixel index is not.
+    """
+    if at_frac is not None:
+        fx, fy = at_frac
+        return (int(round(fx * (intr.width - 1))),
+                int(round(fy * (intr.height - 1))))
+    if at_pixel is not None:
+        return int(at_pixel[0]), int(at_pixel[1])
+    return int(round(intr.ppx)), int(round(intr.ppy))
+
+
+def _pair(text):
+    """Parse 'a,b' into a float pair."""
+    parts = text.replace(" ", "").split(",")
+    if len(parts) != 2:
+        raise argparse.ArgumentTypeError("expected two values as 'a,b'")
+    try:
+        return float(parts[0]), float(parts[1])
+    except ValueError:
+        raise argparse.ArgumentTypeError("values must be numeric")
+
+
 def cmd_center(args):
     """Live distance straight ahead of the lens.
 
@@ -390,6 +423,13 @@ def cmd_center(args):
     chain = build_filters(args.decimate, args.min_range, args.max_range)
     unit_scale = 100.0 if args.units == "cm" else 1.0
     half = max(args.patch // 2, 1)
+
+    # Hold the last good reading briefly instead of flashing "no return".
+    # A dropout of a frame or two is normal on a textured surface, and a
+    # readout that alternates between a number and an error is unreadable --
+    # you cannot tell a real loss of signal from ordinary flicker.
+    last = None
+    last_seen = 0.0
     try:
         while _running:
             depth = grab(pipeline, chain)
@@ -398,23 +438,34 @@ def cmd_center(args):
             intr = depth.profile.as_video_stream_profile().intrinsics
             m = as_metres(depth, scale)
 
-            cx, cy = int(round(intr.ppx)), int(round(intr.ppy))
+            cx, cy = sample_point(intr, args.at, args.at_frac)
+            cx = int(np.clip(cx, 0, intr.width - 1))
+            cy = int(np.clip(cy, 0, intr.height - 1))
             patch = m[max(cy - half, 0):cy + half, max(cx - half, 0):cx + half]
             valid = patch[np.isfinite(patch)]
 
-            if valid.size == 0:
-                sys.stdout.write("\r\x1b[Kno return at centre -- too close, "
-                                 "too far, or a dark/glossy surface")
-                sys.stdout.flush()
-                continue
+            now = time.time()
+            if valid.size:
+                d = float(np.median(valid))
+                px, py, pz = rs.rs2_deproject_pixel_to_point(
+                    intr, [float(cx), float(cy)], d)
+                last = (pz, px, py, 100.0 * valid.size / patch.size)
+                last_seen = now
 
-            d = float(np.median(valid))
-            px, py, pz = rs.rs2_deproject_pixel_to_point(
-                intr, [float(cx), float(cy)], d)
-            sys.stdout.write(
-                f"\r\x1b[Kcentre  {pz * unit_scale:7.1f} {args.units}   "
-                f"(x {px * unit_scale:+6.1f}  y {py * unit_scale:+6.1f})   "
-                f"{100.0 * valid.size / patch.size:3.0f}% of patch valid")
+            if last is None:
+                line = f"  --.- {args.units}   waiting for a return"
+            else:
+                pz, px, py, pct = last
+                stale = now - last_seen
+                line = f"{pz * unit_scale:8.1f} {args.units}"
+                if args.verbose:
+                    line += (f"   x {px * unit_scale:+6.1f}  "
+                             f"y {py * unit_scale:+6.1f}   "
+                             f"({cx},{cy})  {pct:3.0f}% valid")
+                if stale > args.hold:
+                    line += f"   [no return for {stale:.1f}s]"
+
+            sys.stdout.write("\r\x1b[K" + line)
             sys.stdout.flush()
             if args.once:
                 break
@@ -497,8 +548,21 @@ def main(argv=None):
     p = common(sub.add_parser(
         "center", help="live distance straight ahead of the lens"))
     p.add_argument("--patch", type=int, default=9,
-                   help="patch size in pixels, median-filtered")
+                   help="patch size in pixels, median-filtered. 1 samples a "
+                        "single pixel, which on this sensor is noisy and often "
+                        "invalid (default %(default)s)")
+    p.add_argument("--at", type=_pair, metavar="U,V",
+                   help="sample at this pixel instead of the optical centre")
+    p.add_argument("--at-frac", type=_pair, metavar="X,Y", dest="at_frac",
+                   help="sample at this fraction of the frame, e.g. 0.5,0.5 "
+                        "for the middle. Survives --decimate, which a fixed "
+                        "pixel index does not")
     p.add_argument("--units", choices=("m", "cm"), default="cm")
+    p.add_argument("--verbose", action="store_true",
+                   help="also show x/y offset, pixel and patch validity")
+    p.add_argument("--hold", type=float, default=0.5, metavar="S",
+                   help="keep showing the last reading for this long through "
+                        "a dropout before flagging it (default %(default)s)")
     p.add_argument("--once", action="store_true")
 
     p = common(sub.add_parser("record", help="capture a .bag"), decimate=1)

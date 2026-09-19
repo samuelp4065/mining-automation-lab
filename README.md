@@ -38,6 +38,7 @@ multi-hour third-party compile.
 | `src/excavator_description/` | URDF/xacro and the TF tree. **Contains unmeasured placeholders** — see [Before it can drive](#before-it-can-drive). |
 | `src/excavator_bringup/` | Launch files, nav2 parameters, EKF configuration. |
 | `tools/simulator/` | Interactive Matplotlib arm simulator. |
+| `tools/perception/` | `depth_cli.py` — terminal-only RealSense depth pipeline, no ROS or X server. |
 | `tools/drivers/CH341SER_LINUX/` | CH341 USB-to-serial kernel driver for the servo bus adapter. |
 | `upstream.repos` | vcstool manifest reconstructing the third-party overlay. |
 
@@ -60,6 +61,22 @@ ros2 run excavator_kinematics ik_repl        # pose → angles → servo command
 python3 tools/simulator/arm_simulator.py     # interactive arm simulator
 ros2 launch excavator_description description.launch.py joint_mode:=simulate
 ```
+
+Checking the depth camera over SSH, without ROS or a display:
+
+```bash
+python3 tools/perception/depth_cli.py list          # is the camera even there?
+python3 tools/perception/depth_cli.py view          # live ASCII depth heatmap
+python3 tools/perception/depth_cli.py probe         # distances at a 3×3 grid
+python3 tools/perception/depth_cli.py slice --units cm   # nearest surface per column
+python3 tools/perception/depth_cli.py record face.bag --seconds 10
+python3 tools/perception/depth_cli.py view --replay face.bag   # replay at a desk
+```
+
+`slice` is the dig-facing one: it deprojects a horizontal band of the **live**
+depth frame into metric points and reports the nearest surface per column, which
+is the face profile. It reads the live frame rather than the RTAB-Map grid on
+purpose — see [Pipeline](#pipeline).
 
 On the machine:
 
