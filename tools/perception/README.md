@@ -12,6 +12,7 @@ python3 tools/perception/depth_cli.py list            # enumerate cameras
 python3 tools/perception/depth_cli.py view            # live ASCII heatmap
 python3 tools/perception/depth_cli.py stats           # coverage + percentiles
 python3 tools/perception/depth_cli.py probe           # 3x3 grid of distances
+python3 tools/perception/depth_cli.py center          # live distance dead ahead
 python3 tools/perception/depth_cli.py slice --units cm  # face profile
 python3 tools/perception/depth_cli.py record out.bag --seconds 10
 python3 tools/perception/depth_cli.py view --replay out.bag
@@ -24,7 +25,40 @@ python3 tools/perception/depth_cli.py view --replay out.bag
 | `stats` | Numbers to paste into a bug report. Low coverage means a dark or glossy surface. |
 | `probe` | Point at a wall, tape-measure it, compare. Catches a units or depth-scale error before it reaches the IK solver. |
 | `slice` | The dig-relevant one: nearest surface per column across a horizontal band, deprojected to metric points. `--units cm` matches the kinematics solver. |
+| `center` | Live distance straight ahead. Hold something in front of the lens and read the number. |
 | `record` | Capture a `.bag` so a field problem can be replayed at a desk. |
+
+## Where is "straight ahead"?
+
+The depth stream's optical centre on this camera is pixel **(319.2, 242.3)** of
+640x480 — within a pixel of the geometric middle, so the middle of the frame
+*is* the optical axis. Deprojecting the image centre at 1 m lands within 6 mm
+of zero.
+
+| command | where the centre is |
+| ------- | ------------------- |
+| `center` | the whole output — a patch at the optical centre |
+| `probe` | the **middle cell** of the 3x3 grid |
+| `view` | the middle of the ASCII grid |
+| `slice` | the column where the printed `x` is nearest zero |
+
+Coordinates are the **optical frame**: `x` right, `y` down, `z` forward, all
+from the lens. So `z` is the distance you care about, and `x`/`y` near zero
+confirm you are reading the centre rather than straddling an edge.
+
+To sanity-check the camera, hold a flat object in front of the lens and run:
+
+```bash
+python3 tools/perception/depth_cli.py center
+```
+
+Then tape-measure it. Remember the D435i sees nothing closer than ~0.3 m, so
+measure at 0.5 m or more — a hand pressed against the lens reads as no return,
+not as zero.
+
+One physical note: depth originates at the **left infrared imager**, not the
+colour lens in the middle of the camera. At arm's length that ~2 cm offset does
+not matter; for calibrating the arm it does.
 
 ## Low coverage is usually a distant scene, not a broken camera
 
