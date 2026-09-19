@@ -117,7 +117,7 @@ def open_pipeline(args, record_to=None):
 # Stage 2: filter
 # --------------------------------------------------------------------------
 
-def build_filters(decimate):
+def build_filters(decimate, min_range=RANGE_MIN_M, max_range=RANGE_MAX_M):
     """The recommended librealsense post-processing order.
 
     Spatial and temporal filters operate on *disparity*, not depth, so they
@@ -131,8 +131,19 @@ def build_filters(decimate):
     to_depth = rs.disparity_transform(False)
 
     threshold = rs.threshold_filter()
-    threshold.set_option(rs.option.min_distance, RANGE_MIN_M)
-    threshold.set_option(rs.option.max_distance, RANGE_MAX_M)
+    # librealsense caps this filter at 16 m and rejects anything beyond with
+    # an opaque "out of range value" error, so clamp and say so instead.
+    for option, value, label in (
+        (rs.option.min_distance, min_range, "--min-range"),
+        (rs.option.max_distance, max_range, "--max-range"),
+    ):
+        limits = threshold.get_option_range(option)
+        clamped = min(max(value, limits.min), limits.max)
+        if clamped != value:
+            print(f"note: {label} {value} m is outside the filter's "
+                  f"{limits.min:g}-{limits.max:g} m range; using {clamped:g} m",
+                  file=sys.stderr)
+        threshold.set_option(option, clamped)
 
     chain = [threshold]
     if decimate > 1:
@@ -211,7 +222,7 @@ def render(metres, near, far, cols, rows, color=True):
 
 def cmd_view(args):
     pipeline, scale = open_pipeline(args)
-    chain = build_filters(args.decimate)
+    chain = build_filters(args.decimate, args.min_range, args.max_range)
     color = not args.no_color and sys.stdout.isatty()
     frames = 0
     t0 = time.time()
@@ -250,7 +261,7 @@ def cmd_view(args):
 def cmd_stats(args):
     """Numbers rather than pictures -- what to paste into a bug report."""
     pipeline, scale = open_pipeline(args)
-    chain = build_filters(args.decimate)
+    chain = build_filters(args.decimate, args.min_range, args.max_range)
     try:
         while _running:
             depth = grab(pipeline, chain)
@@ -280,7 +291,7 @@ def cmd_probe(args):
     the IK solver.
     """
     pipeline, scale = open_pipeline(args)
-    chain = build_filters(args.decimate)
+    chain = build_filters(args.decimate, args.min_range, args.max_range)
     stack = []
     try:
         while _running and len(stack) < args.samples:
@@ -295,14 +306,19 @@ def cmd_probe(args):
         print("no frames captured")
         return 1
 
-    avg = np.nanmedian(np.dstack(stack), axis=2)
+    # An all-NaN stack at some pixel is normal -- it just means nothing
+    # returned there across every frame. numpy warns anyway, and the warning
+    # lands in the middle of the table it is printing.
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        avg = np.nanmedian(np.dstack(stack), axis=2)
     h, w = avg.shape
     print(f"median of {len(stack)} frames, {w}x{h}\n")
     for fy in (0.25, 0.5, 0.75):
         cells = []
         for fx in (0.25, 0.5, 0.75):
             d = avg[int(fy * h), int(fx * w)]
-            cells.append("  n/a  " if np.isnan(d) else f"{d:6.3f}m")
+            cells.append("    n/a" if np.isnan(d) else f"{d:6.3f}m")
         print("   ".join(cells))
     return 0
 
@@ -316,7 +332,7 @@ def cmd_slice(args):
     arm base frame is the caller's job.
     """
     pipeline, scale = open_pipeline(args)
-    chain = build_filters(args.decimate)
+    chain = build_filters(args.decimate, args.min_range, args.max_range)
     unit_scale = 100.0 if args.units == "cm" else 1.0
     try:
         while _running:
@@ -360,7 +376,7 @@ def cmd_slice(args):
 def cmd_record(args):
     """Capture a .bag so a field problem can be replayed at a desk."""
     pipeline, _ = open_pipeline(args, record_to=args.path)
-    chain = build_filters(1)  # record raw; filter on replay instead
+    chain = build_filters(1, args.min_range, args.max_range)  # record raw
     t0 = time.time()
     n = 0
     try:
@@ -393,6 +409,15 @@ def main(argv=None):
         p.add_argument("--fps", type=int, default=30)
         p.add_argument("--decimate", type=int, default=decimate,
                        help="decimation magnitude; 1 disables")
+        p.add_argument("--min-range", type=float, default=RANGE_MIN_M,
+                       dest="min_range", metavar="M",
+                       help="drop returns closer than this (default %(default)s)")
+        p.add_argument("--max-range", type=float, default=RANGE_MAX_M,
+                       dest="max_range", metavar="M",
+                       help="drop returns beyond this (default %(default)s). "
+                            "Raise it when most of the scene reads as no-return "
+                            "-- low coverage usually means a distant scene, not "
+                            "a broken camera")
         return p
 
     sub.add_parser("list", help="enumerate attached cameras")

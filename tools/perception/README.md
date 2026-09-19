@@ -26,6 +26,28 @@ python3 tools/perception/depth_cli.py view --replay out.bag
 | `slice` | The dig-relevant one: nearest surface per column across a horizontal band, deprojected to metric points. `--units cm` matches the kinematics solver. |
 | `record` | Capture a `.bag` so a field problem can be replayed at a desk. |
 
+## Low coverage is usually a distant scene, not a broken camera
+
+`stats` reporting 10-20% coverage looks alarming and generally is not. The
+threshold filter drops everything outside 0.3-8 m, and in a large space most
+of the scene is beyond that. Measured on one indoor scene:
+
+| range | share of raw returns |
+| ----- | -------------------- |
+| below 0.3 m | 13% (noise -- the D435i cannot see this close) |
+| 0.3-8 m | 41% (kept) |
+| beyond 8 m | 43% (dropped) |
+
+Raw coverage was 70%. Widen the window to see what is really out there:
+
+```bash
+python3 tools/perception/depth_cli.py stats --once --max-range 16
+```
+
+librealsense caps the filter at 16 m; asking for more prints a note and uses
+16. Keep the *default* at 8 m — it matches `sensors.launch.py`, and the two
+disagreeing would mean the costmap and this tool see different worlds.
+
 ## Notes
 
 **Zero is not a distance.** A zero in a z16 frame means *no measurement*.
