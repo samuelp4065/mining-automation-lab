@@ -173,3 +173,73 @@ def test_yaml_matches_nav2_map_server_schema(tmp_path):
 def test_resolution_must_be_positive():
     with pytest.raises(ValueError):
         OccupancyMap(width_m=1.0, height_m=1.0, resolution=0.0)
+
+
+# --- polygon walls and fills, including the reflex (concave) corner --------
+
+from occupancy_map import walk_to_vertices  # noqa: E402
+
+
+def test_polygon_fill_matches_rect_fill_for_a_square():
+    m1 = OccupancyMap(width_m=4.0, height_m=4.0, resolution=0.5)
+    m1.mark_polygon_free([(0, 0), (4, 0), (4, 4), (0, 4)])
+
+    m2 = OccupancyMap(width_m=4.0, height_m=4.0, resolution=0.5)
+    m2.mark_free_rect(0, 0, 4, 4)
+
+    assert (m1.grid == FREE).sum() == (m2.grid == FREE).sum()
+
+
+def _l_shape_vertices():
+    """4x4m square with a 2x2m notch bitten from the top-right corner.
+
+    Walked counterclockwise from the origin: every convex corner turns left
+    (+90), except the single reflex corner at the inside of the notch, which
+    turns right (-90). This is the case a bounding-box or naive fill cannot
+    express, and the one real sites like an L-shaped room actually need.
+    """
+    steps = [
+        (4.0, 90.0), (2.0, 90.0), (2.0, -90.0),
+        (2.0, 90.0), (2.0, 90.0), (4.0, 90.0),
+    ]
+    return walk_to_vertices(start=(0.0, 0.0), heading_deg=0.0, steps=steps)
+
+
+def test_walk_to_vertices_closes_the_loop():
+    verts = _l_shape_vertices()
+    assert np.allclose(verts[-1], (0.0, 0.0))
+
+
+def test_reflex_corner_notch_is_excluded_from_the_fill():
+    """The whole point of mark_polygon_free over a bounding-box fill."""
+    m = OccupancyMap(width_m=5.0, height_m=5.0, resolution=0.25)
+    m.mark_polygon_free(_l_shape_vertices())
+
+    row, col = m._point_to_rowcol(3.0, 3.0)   # inside the notch
+    assert m.grid[row, col] == UNKNOWN
+
+
+def test_l_shape_body_is_free():
+    m = OccupancyMap(width_m=5.0, height_m=5.0, resolution=0.25)
+    m.mark_polygon_free(_l_shape_vertices())
+
+    row, col = m._point_to_rowcol(1.0, 1.0)   # inside the L's main body
+    assert m.grid[row, col] == FREE
+
+
+def test_polygon_wall_closes_back_to_the_first_vertex():
+    """The edge between the last and first point must be drawn too."""
+    m = OccupancyMap(width_m=5.0, height_m=5.0, resolution=0.25)
+    m.add_polygon_wall([(1, 1), (3, 1), (3, 3), (1, 3)], thickness_m=0.25)
+
+    # midpoint of the closing edge (1,3) -> (1,1)
+    row, col = m._point_to_rowcol(1.0, 2.0)
+    assert m.grid[row, col] == OCCUPIED
+
+
+def test_polygon_needs_at_least_three_vertices():
+    m = OccupancyMap(width_m=2.0, height_m=2.0, resolution=0.5)
+    with pytest.raises(ValueError):
+        m.mark_polygon_free([(0, 0), (1, 1)])
+    with pytest.raises(ValueError):
+        m.add_polygon_wall([(0, 0), (1, 1)])
