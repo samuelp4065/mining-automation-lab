@@ -22,6 +22,7 @@ Usage:
     python3 tools/perception/depth_cli.py view
     python3 tools/perception/depth_cli.py stats
     python3 tools/perception/depth_cli.py probe
+    python3 tools/perception/depth_cli.py center
     python3 tools/perception/depth_cli.py slice --units cm
     python3 tools/perception/depth_cli.py record out.bag --seconds 10
     python3 tools/perception/depth_cli.py view --replay out.bag
@@ -373,6 +374,56 @@ def cmd_slice(args):
     return 0
 
 
+def cmd_center(args):
+    """Live distance straight ahead of the lens.
+
+    The one to run while holding something in front of the camera. Reports
+    the median of a small patch at the *optical* centre -- which is where the
+    lens actually points, not quite the geometric middle of the image -- so a
+    single dead pixel cannot make the reading jump.
+
+    The printed x and y are the patch's lateral and vertical offset from the
+    optical axis. Both should sit near zero; if they do not, the patch is
+    straddling an edge and the distance is a blend of two surfaces.
+    """
+    pipeline, scale = open_pipeline(args)
+    chain = build_filters(args.decimate, args.min_range, args.max_range)
+    unit_scale = 100.0 if args.units == "cm" else 1.0
+    half = max(args.patch // 2, 1)
+    try:
+        while _running:
+            depth = grab(pipeline, chain)
+            if depth is None:
+                break
+            intr = depth.profile.as_video_stream_profile().intrinsics
+            m = as_metres(depth, scale)
+
+            cx, cy = int(round(intr.ppx)), int(round(intr.ppy))
+            patch = m[max(cy - half, 0):cy + half, max(cx - half, 0):cx + half]
+            valid = patch[np.isfinite(patch)]
+
+            if valid.size == 0:
+                sys.stdout.write("\r\x1b[Kno return at centre -- too close, "
+                                 "too far, or a dark/glossy surface")
+                sys.stdout.flush()
+                continue
+
+            d = float(np.median(valid))
+            px, py, pz = rs.rs2_deproject_pixel_to_point(
+                intr, [float(cx), float(cy)], d)
+            sys.stdout.write(
+                f"\r\x1b[Kcentre  {pz * unit_scale:7.1f} {args.units}   "
+                f"(x {px * unit_scale:+6.1f}  y {py * unit_scale:+6.1f})   "
+                f"{100.0 * valid.size / patch.size:3.0f}% of patch valid")
+            sys.stdout.flush()
+            if args.once:
+                break
+    finally:
+        pipeline.stop()
+        print()
+    return 0
+
+
 def cmd_record(args):
     """Capture a .bag so a field problem can be replayed at a desk."""
     pipeline, _ = open_pipeline(args, record_to=args.path)
@@ -443,6 +494,13 @@ def main(argv=None):
                    help="cm matches the kinematics solver")
     p.add_argument("--once", action="store_true")
 
+    p = common(sub.add_parser(
+        "center", help="live distance straight ahead of the lens"))
+    p.add_argument("--patch", type=int, default=9,
+                   help="patch size in pixels, median-filtered")
+    p.add_argument("--units", choices=("m", "cm"), default="cm")
+    p.add_argument("--once", action="store_true")
+
     p = common(sub.add_parser("record", help="capture a .bag"), decimate=1)
     p.add_argument("path")
     p.add_argument("--seconds", type=float, default=10.0)
@@ -450,7 +508,8 @@ def main(argv=None):
     args = parser.parse_args(argv)
     handlers = {
         "list": lambda a: list_devices(), "view": cmd_view, "stats": cmd_stats,
-        "probe": cmd_probe, "slice": cmd_slice, "record": cmd_record,
+        "probe": cmd_probe, "slice": cmd_slice, "center": cmd_center,
+        "record": cmd_record,
     }
     try:
         return handlers[args.cmd](args)
