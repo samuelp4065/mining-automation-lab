@@ -22,6 +22,7 @@ alongside this node is fine, but a second *teleop* is not.
 import rclpy
 from geometry_msgs.msg import Twist
 from rclpy.node import Node
+from std_msgs.msg import Bool
 
 from . import lss
 from . import lss_const as lssc
@@ -44,6 +45,16 @@ class MotorNode(Node):
         self.max_rpm = declare_float(self, "max_rpm", DEFAULT_MAX_RPM)
         self.cmd_timeout = declare_float(self, "cmd_timeout", 0.5)
 
+        # Proximity interlock. require_proximity_ok=False disables it entirely
+        # for bench work; leave it on whenever the machine can actually move.
+        self.declare_parameter("require_proximity_ok", True)
+        self.require_proximity = self.get_parameter("require_proximity_ok").value
+        self.proximity_timeout = declare_float(self, "proximity_timeout", 1.0)
+        # Start blocked: until proximity_monitor has said otherwise, there is
+        # no evidence the path ahead is clear.
+        self.proximity_ok = not self.require_proximity
+        self.last_proximity_time = None
+
         lss.initBus(port, lssc.LSS_DefaultBaud)
         self.left = lss.LSS(LEFT_ID)
         self.right = lss.LSS(RIGHT_ID)
@@ -53,19 +64,55 @@ class MotorNode(Node):
         self._stop()
 
         self.create_subscription(Twist, "cmd_vel", self._on_cmd_vel, 10)
+        self.create_subscription(Bool, "proximity_ok", self._on_proximity, 10)
         self.create_timer(0.1, self._watchdog)
 
         self.get_logger().info(
             f"motor_node on {port}: separation={self.separation} m, "
             f"{self.rpm_per_mps} rpm per m/s, max {self.max_rpm} rpm, "
-            f"watchdog {self.cmd_timeout} s"
+            f"watchdog {self.cmd_timeout} s, "
+            f"proximity interlock {'ON' if self.require_proximity else 'OFF'}"
         )
+
+    def _on_proximity(self, msg):
+        if msg.data != self.proximity_ok:
+            self.get_logger().info(
+                f"proximity: forward motion {'permitted' if msg.data else 'BLOCKED'}")
+        self.proximity_ok = bool(msg.data)
+        self.last_proximity_time = self.get_clock().now()
+
+    def _forward_permitted(self):
+        """Fail safe: no interlock signal means no forward motion.
+
+        Silence is treated as unsafe rather than ignored. If the monitor
+        crashes or the camera is unplugged the topic simply stops, and an
+        interlock that quietly switches itself off when it breaks is worse
+        than none -- by then you are relying on it.
+        """
+        if not self.require_proximity:
+            return True
+        if self.last_proximity_time is None:
+            return False
+        age = (self.get_clock().now() - self.last_proximity_time).nanoseconds * 1e-9
+        if age > self.proximity_timeout:
+            self.get_logger().warn(
+                f"no proximity signal for {age:.1f} s; blocking forward motion",
+                throttle_duration_sec=2.0)
+            return False
+        return self.proximity_ok
 
     def _on_cmd_vel(self, msg):
         self.last_cmd_time = self.get_clock().now()
 
+        linear_x = msg.linear.x
+        # Block forward travel only. Reverse and spin stay available, or the
+        # operator would have no way to back away from the obstacle that
+        # triggered the stop.
+        if linear_x > 0.0 and not self._forward_permitted():
+            linear_x = 0.0
+
         v_left, v_right = twist_to_track_speeds(
-            msg.linear.x, msg.angular.z, self.separation
+            linear_x, msg.angular.z, self.separation
         )
 
         # Convert first, limit second. Clamping each track on its own would

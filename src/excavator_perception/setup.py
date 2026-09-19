@@ -20,6 +20,8 @@ setup(
     entry_points={
         'console_scripts': [
             'aruco_detection_node = excavator_perception.aruco_detection_node:main',
+            'proximity_monitor = excavator_perception.proximity_monitor:main',
+            'fake_depth = excavator_perception.fake_depth:main',
         ],
     },
 )
