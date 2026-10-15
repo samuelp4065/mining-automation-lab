@@ -23,6 +23,10 @@ __pycache__/
 .venv/
 venv/
 
+# Runtime actuator positions, rewritten on every move by actuator_teleop.py
+tools/actuators/actuator_state.json
+tools/actuators/actuator_state.tmp
+
 # Kernel module build output
 *.o
 *.ko
