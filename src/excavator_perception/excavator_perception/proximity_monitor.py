@@ -163,3 +163,10 @@ def main(args=None):
 
 if __name__ == "__main__":
     main()
+
+# Width1 = 597cm
+# Length1 = 254 cm
+# Width2 = 120cm
+# Length 3 = 365 cm
+# Width_2 = 714 cm
+# Length4 = 614 cm
