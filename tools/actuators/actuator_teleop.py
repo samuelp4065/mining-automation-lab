@@ -54,8 +54,9 @@ JOINTS = {
     "bucket": ("n", "m", 2, BUCKET_MAXMIN),
 }
 
-# Outside the repo, so a position that only describes this machine never gets committed.
-STATE_FILE = Path.home() / ".actuator_teleop_state.json"
+# Next to this script, and listed in .gitignore: a checkout must never overwrite it with a stale
+# position, or the next key press drives from a place the arm isn't.
+STATE_FILE = Path(__file__).with_name("actuator_state.json")
 
 
 def angle_to_mm(angle, limits):
