@@ -1,0 +1,31 @@
+title: Mining Automation Lab
+description: An autonomous mining excavator on a Jetson Orin Nano — perception, closed-form kinematics, and actuation.
+
+remote_theme: just-the-docs/just-the-docs
+
+# Mermaid renders the pipeline diagrams. just-the-docs loads it on demand, so
+# pages without a mermaid block pay nothing for this.
+mermaid:
+  version: "10.9.0"
+
+aux_links:
+  "View on GitHub":
+    - "https://github.com/samuelp4065/mining-automation-lab"
+aux_links_new_tab: true
+
+search_enabled: true
+heading_anchors: true
+
+color_scheme: dark
+
+# Jekyll builds every file it is given unless told otherwise. These are build
+# artefacts and caches that must never reach the published site.
+exclude:
+  - build/
+  - install/
+  - log/
+  - "**/__pycache__/"
+  - "**/.pytest_cache/"
+
+plugins:
+  - jekyll-remote-theme
