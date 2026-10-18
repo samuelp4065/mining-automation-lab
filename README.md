@@ -5,6 +5,8 @@ A RealSense D435i locates the dig target, closed-form inverse kinematics turns t
 target into joint angles, and LSS smart servos plus RC linear actuators execute the
 dig cycle.
 
+**Demo video:** [youtube.com/shorts/M56Mw9_AU64](https://youtube.com/shorts/M56Mw9_AU64)
+
 This is a **ROS 2 Humble workspace** holding all first-party code. It builds as an
 overlay on `~/ros2_ws`, which carries only third-party sources (librealsense,
 realsense-ros, rtabmap, rtabmap_ros), so rebuilding this repo never triggers a
