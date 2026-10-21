@@ -1,0 +1,6 @@
+runs/
+maps/
+captures/
+Excavator_Bucket-*/
+*.pt
+*.npy
